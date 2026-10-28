@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ZyroXQ — Agent Deal Desk</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">ZyroXQ</span>
+      <span class="tagline">Agents negotiate · HSP locks · proof releases</span>
+    </div>
+    <div id="badges" class="badges"></div>
+  </header>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="card">
+        <h2>New campaign</h2>
+        <form id="campaign-form" class="form">
+          <label>Brief <textarea name="brief" rows="3">Launching FitFuel protein bars. 30-second YouTube Shorts from fitness creators, honest review, must disclose #ad.</textarea></label>
+          <button type="button" id="draft-btn" class="ghost">Draft fields with AI</button>
+          <div class="grid2">
+            <label>Advertiser <input name="advertiser" value="FitFuel" required /></label>
+            <label>Brand handle <input name="brand_handle" value="@fitfuel" required /></label>
+            <label>Niche
+              <select name="niche"><option>fitness</option><option>food</option></select>
+            </label>
+            <label>Max creators <input name="max_creators" type="number" min="1" max="10" value="3" /></label>
+            <label>Budget (USD) <input name="budget" value="120.00" /></label>
+            <label>Cap / creator <input name="cap_per_creator" value="40.00" /></label>
+            <label>Max fixed fee <input name="max_fixed" value="25.00" /></label>
+            <label>Max CPM <input name="max_cpm" value="3.00" /></label>
+          </div>
+          <button type="submit" class="primary">Launch Advertiser Agent</button>
+          <p id="form-error" class="error" hidden></p>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Campaigns</h2>
+        <ul id="campaigns" class="list"><li class="muted">None yet</li></ul>
+      </section>
+
+      <section class="card">
+        <h2>Influencer agents <span class="muted small">A2A</span></h2>
+        <ul id="influencers" class="list"></ul>
+      </section>
+    </aside>
+
+    <section class="content">
+      <div id="empty" class="card empty">
+        <h2>How a deal flows</h2>
+        <ol class="flow">
+          <li><b>Discover</b> — the Advertiser Agent reads influencer Agent Cards.</li>
+          <li><b>Negotiate</b> — parallel A2A offers and counter-offers; the policy engine bounds every move.</li>
+          <li><b>Cart Mandate</b> — ZyroXQ (the HSP merchant) creates the order, paying into escrow.</li>
+          <li><b>Payment Mandate</b> — after the policy gate (and your approval above the threshold) the wallet signs EIP-3009.</li>
+          <li><b>Settle</b> — HSP verifies, settles, and its webhook funds the escrow.</li>
+          <li><b>Prove</b> — the verifier checks the video; signed attestations release fixed and performance fees.</li>
+        </ol>
+        <p class="muted">Launch a campaign on the left to watch it run.</p>
+      </div>
+
+      <div id="campaign-view" hidden>
+        <div class="card">
+          <div class="row spread">
+            <div>
+              <h2 id="cv-title"></h2>
+              <p id="cv-sub" class="muted"></p>
+            </div>
+            <div class="row gap">
+              <button class="ghost" data-advance="49">+49 h</button>
+              <button class="ghost" data-advance="168">+7 days</button>
+            </div>
+          </div>
+          <div id="approval" class="approval" hidden></div>
+          <div id="stats" class="stats"></div>
+        </div>
+
+        <div class="card">
+          <h2>Deals</h2>
+          <div class="table-wrap">
+            <table class="deals">
+              <thead><tr><th>Creator</th><th>State</th><th>Fixed</th><th>CPM</th><th>Cap</th><th>Paid</th><th>Proof</th></tr></thead>
+              <tbody id="deals"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="deal-detail" class="card" hidden></div>
+
+        <div class="card">
+          <h2>Audit trail</h2>
+          <ol id="events" class="timeline"></ol>
+        </div>
+
+        <div class="card">
+          <h2>Ask the campaign assistant <span class="muted small">LangChain agent · MCP tools</span></h2>
+          <form id="ask-form" class="row gap">
+            <input name="question" placeholder="How much is still locked in escrow?" class="grow" />
+            <button class="primary">Ask</button>
+          </form>
+          <p id="answer" class="answer"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

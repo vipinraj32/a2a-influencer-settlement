@@ -32,10 +32,41 @@ ZyroXQ is a decentralized influencer-marketing platform built for the HashKey **
 
 | Piece | Status |
 |---|---|
-| Python 3.13 + uv project, package `zyroxq` | ✅ Done |
-| Dependencies (LangChain, LangGraph, LangSmith, MCP, A2A, web3…) | ✅ Installed and import-tested |
-| HSP client, agents, MCP servers, verifier, escrow, UI | 🚧 Not started |
+| HSP merchant client (HMAC, ES256K Cart Mandate JWT, orders, payments, webhooks) | ✅ Built, unit-tested; not yet run against the live QA gateway |
+| Policy engine (offers, signed terms, cart gate, budget, approval threshold) | ✅ Built and tested |
+| Payment Mandate (x402 `exact` / EIP-3009 signature) + simulated HSP gateway | ✅ Built and tested |
+| Influencer + Advertiser agents (LangGraph, A2A, parallel negotiation, human approval) | ✅ Built and tested end to end |
+| Verifier (YouTube checks, prompt-injection flag, signed attestations) | ✅ Built; live YouTube API path untested without a key |
+| CampaignEscrow.sol + Python escrow (simulated ledger / on-chain) | ✅ Compiles; simulated ledger tested; not yet deployed |
+| MCP server (read-only tools) + LangChain assistant | ✅ Tools tested over streamable HTTP; assistant needs `ANTHROPIC_API_KEY` |
+| PostgreSQL store + LangGraph Postgres checkpointer | ✅ Built; needs a database to test (`TEST_DATABASE_URL`) |
+| Dashboard UI | ✅ Built |
 | HSP merchant onboarding (`app_key` / `app_secret`) | 🚧 Pending |
+
+### Run the demo
+
+```bash
+uv sync
+uv run zyroxq serve          # http://localhost:8000
+```
+
+With no configuration everything runs locally: the HSP gateway and escrow are emulated in-process (same signature and
+amount checks), demo videos stand in for YouTube, and agents negotiate with deterministic strategies. The dashboard's
+top bar shows what is simulated. Add keys to `.env` to switch each piece to the real one:
+
+| Set in `.env` | Switches on |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude-powered negotiation, brief drafting, campaign assistant |
+| `DATABASE_URL` | PostgreSQL storage + LangGraph checkpoints |
+| `YOUTUBE_API_KEY` | Real YouTube Data API proof checks (paste real Short URLs) |
+| `ESCROW_ADDRESS` + `OPERATOR_PRIVATE_KEY` | On-chain CampaignEscrow (`uv run python scripts/deploy_escrow.py`) |
+| `SETTLEMENT_MODE=hosted` + HSP credentials | Real HSP orders; the advertiser signs in HSP's hosted checkout |
+
+**Demo script:** launch the default campaign → watch four A2A negotiations → approve the $120 batch → three deals are
+funded → *Post video* on one deal, *Copied URL* and *Injection* on the others → **+49 h** releases the fixed fee →
+**+7 days** pays performance from views, refunds the rest and expires the fake proofs.
+
+MCP for Claude Desktop (server must be running): `uv run zyroxq mcp` over stdio, or connect to `http://localhost:8000/mcp/`.
 
 ---
 
@@ -213,36 +244,46 @@ receive_offer → llm_evaluate → floor_price_rule → {counter | accept | reje
 
 A LangGraph PostgreSQL checkpointer (`langgraph-checkpoint-postgres`) lets each deal survive restarts and wait days for proof.
 
-## MCP tool servers (what the LLM is allowed to touch)
+## MCP server (what the LLM is allowed to touch)
 
-| MCP server | Tools | Risk |
-|---|---|---|
-| `youtube-mcp` | `get_channel`, `get_video`, `get_video_stats` | Read-only |
-| `deals-mcp` | `list_deals`, `get_deal`, `campaign_spend` | Read-only |
-| `hsp-mcp` | `get_payment_status` | Read-only |
-| `escrow-mcp` | `get_escrow_balance` | Read-only |
+One read-only `zyroxq` MCP server, embedded at `/mcp/` (streamable HTTP) and runnable over stdio (`uv run zyroxq mcp`):
+
+| Tool | Returns |
+|---|---|
+| `list_campaigns` | Campaigns with status, budget, niche |
+| `list_deals` | Deals of a campaign: state, agreed amounts, payouts |
+| `get_deal` | Negotiation rounds, signed terms, HSP status, proof checks, attestations |
+| `get_deal_timeline` | Audit log of one deal |
+| `campaign_spend` | Locked via HSP, paid to creators, refunded, still in escrow |
+| `get_video_stats` | A YouTube video as the verifier sees it |
 
 Signing, creating orders and releasing funds are deliberately **not** tools. They are fixed graph nodes that run only after the policy engine passes.
 
 ---
 
-## Planned folder structure
+## Folder structure
 
 ```
 src/zyroxq/
+  __init__.py          CLI: zyroxq serve | mcp | gen-merchant-key
   config.py            pydantic-settings (.env)
-  models.py            CampaignSpec, Offer, DealTerms, Attestation, DealState
-  hsp/                 canonical.py · auth.py · cart.py · client.py · webhook.py
-  policy/engine.py     all payment rules, pure functions, heavily tested
-  wallet/signer.py     EIP-712 Payment Mandate signing
-  chain/escrow.py      web3 wrapper
-  agents/advertiser/   graph.py · nodes.py · a2a_executor.py
-  agents/influencer/   graph.py · nodes.py · a2a_executor.py
-  verifier/            youtube.py · attest.py
-  mcp_servers/         youtube.py · deals.py · hsp.py · escrow.py
-  api/                 FastAPI app: deals, webhooks, A2A mounts, dashboard API
-  db.py                PostgreSQL via psycopg 3 (deals + audit log)
-contracts/CampaignEscrow.sol
+  models.py            CampaignSpec, Offer, DealTerms, Deal, DealState, Attestation, AuditEvent
+  clock.py             wall clock with demo fast-forward
+  hsp/                 canonical · auth (HMAC, ES256K JWT) · cart · client · webhook · networks
+  policy/engine.py     every payment rule, pure functions
+  wallet/              signer (EIP-3009 Payment Mandate, EIP-191 terms) · gateway (simulated / hosted HSP)
+  chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
+  verifier/            youtube (Data API / demo fixtures) · verify (checks) · attest (signed releases)
+  agents/influencer/   LangGraph negotiation graph + A2A server (Agent Card, JSON-RPC)
+  agents/advertiser/   LangGraph campaign graph · negotiation moves · runner · MCP assistant
+  agents/a2a_client.py A2A client connector
+  services/            context (wires backends) · deals (lifecycle, webhooks, payouts)
+  store/               memory + PostgreSQL (JSONB) stores
+  mcp_servers/         read-only FastMCP server
+  api/                 FastAPI app + static dashboard
+  demo/fixtures.py     demo influencers
+contracts/CampaignEscrow.sol (+ build/ ABI)
+scripts/               compile_contracts · deploy_escrow · smoke_hsp_order
 tests/
 ```
 

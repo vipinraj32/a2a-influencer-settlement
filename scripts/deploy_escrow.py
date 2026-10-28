@@ -1,0 +1,46 @@
+"""Deploys CampaignEscrow to HashKey Chain Testnet.
+
+Needs in .env: OPERATOR_PRIVATE_KEY (funded with testnet HSK for gas), VERIFIER_PRIVATE_KEY.
+Optional: ARBITER_ADDRESS (defaults to the operator).
+Usage: uv run python scripts/deploy_escrow.py   → prints ESCROW_ADDRESS to put in .env
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+from eth_account import Account
+from web3 import Web3
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def main() -> None:
+    load_dotenv(ROOT / ".env")
+    rpc = os.environ.get("HASHKEY_TESTNET_RPC_URL", "https://testnet.hsk.xyz")
+    operator_key = os.environ.get("OPERATOR_PRIVATE_KEY") or sys.exit("OPERATOR_PRIVATE_KEY is not set")
+    verifier_key = os.environ.get("VERIFIER_PRIVATE_KEY") or sys.exit("VERIFIER_PRIVATE_KEY is not set")
+    operator = Account.from_key(operator_key)
+    verifier = Account.from_key(verifier_key).address
+    arbiter = os.environ.get("ARBITER_ADDRESS") or operator.address
+
+    artifact = json.loads((ROOT / "contracts" / "build" / "CampaignEscrow.json").read_text(encoding="utf-8"))
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    chain_id = w3.eth.chain_id
+    print(f"chain {chain_id} · operator {operator.address} · balance {w3.from_wei(w3.eth.get_balance(operator.address), 'ether')} HSK")
+    contract = w3.eth.contract(abi=artifact["abi"], bytecode=artifact["bytecode"])
+    tx = contract.constructor(operator.address, verifier, Web3.to_checksum_address(arbiter)).build_transaction(
+        {"from": operator.address, "nonce": w3.eth.get_transaction_count(operator.address), "chainId": chain_id}
+    )
+    tx_hash = w3.eth.send_raw_transaction(operator.sign_transaction(tx).raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+    if receipt["status"] != 1:
+        sys.exit(f"deployment reverted: {tx_hash.hex()}")
+    print(f"ESCROW_ADDRESS={receipt['contractAddress']}")
+    print(f"verifier {verifier} · arbiter {arbiter} · tx {tx_hash.hex()}")
+
+
+if __name__ == "__main__":
+    main()

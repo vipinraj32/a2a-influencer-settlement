@@ -12,9 +12,12 @@ Agent-negotiated influencer deals with escrow-backed, proof-based payouts settle
 Core rule: **the LLM proposes, deterministic code decides, the key signs.** No payment path may depend on LLM output alone.
 
 ## Layout
-Python 3.13 project managed with uv; package lives in `src/zyroxq/`.
-- Planned modules: `zyroxq/hsp` (HSP merchant client: Canonical JSON, HMAC signing, ES256K merchant JWT with low-S, Cart Mandate builder, orders/payments, webhook verification), `zyroxq/agents/advertiser` and `zyroxq/agents/influencer` (LangGraph agents exposed over A2A), `zyroxq/policy` (deterministic payment policy engine), `zyroxq/verifier` (YouTube proof checks + attestations), `zyroxq/mcp` (MCP tool servers), `contracts/` (CampaignEscrow).
-- `scripts/` — planned: `gen_merchant_key.py` (onboarding key pair → `keys/`), `smoke_create_order.py` (live QA order).
+Python 3.13 project managed with uv; package in `src/zyroxq/` (see README "Folder structure").
+- `services/deals.py` owns the deal lifecycle; `agents/advertiser/graph.py` only negotiates, gates and signs through it.
+- Simulated vs real backends are chosen in `services/context.py` from settings; hosted HSP mode refuses to start without an on-chain escrow.
+- Signing (Payment Mandate, terms, attestations) happens only in fixed code paths after `policy/` checks — never expose it as an LLM/MCP tool.
+- Escrow rules exist twice (`contracts/CampaignEscrow.sol` and `chain/escrow.py` SimulatedEscrow) — change both together; `attestation_digest` must match the contract.
+- Recompile the contract with `uv run python scripts/compile_contracts.py` (writes `contracts/build/CampaignEscrow.json`).
 
 ## Stack
 - Agents: LangChain 1.x (`langchain.agents.create_agent`), LangGraph, LangSmith tracing (env `LANGSMITH_*`), `langchain-anthropic` as the LLM provider.
@@ -29,7 +32,9 @@ Python 3.13 project managed with uv; package lives in `src/zyroxq/`.
 - `uv add <pkg>` / `uv add --dev <pkg>` — then regenerate the requirements files:
   `uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -o requirements.txt`
   `uv export --format requirements-txt --no-hashes --only-dev --no-emit-project -o requirements-dev.txt`
-- `uv run pytest` · `uv run ruff check .` · `uv run ruff format .`
+- `uv run zyroxq serve` (dashboard at http://localhost:8000) · `uv run zyroxq mcp` · `uv run zyroxq gen-merchant-key`
+- `uv run pytest` · `uv run ruff check .` · `uv run ruff format .` — set `TEST_DATABASE_URL` to run the PostgreSQL store test
+- Windows: psycopg async needs a SelectorEventLoop; the CLI and tests set it — keep it that way.
 - `pyproject.toml` + `uv.lock` are the source of truth; `requirements*.txt` are generated for pip users — never edit them by hand.
 
 ## HSP facts (from https://hashkey-merchant.github.io/#/ docs)
