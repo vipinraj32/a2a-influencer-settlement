@@ -1,5 +1,6 @@
-"""Deal lifecycle after negotiation: Cart Mandate → policy gate → Payment Mandate → HSP settlement →
-escrow funding → proof verification → payouts. Every transition is written to the audit log."""
+"""Deal lifecycle after negotiation: Cart Mandate → policy gate → Payment Mandate (signed in the
+advertiser's browser wallet) → HSP settlement → escrow funding → proof verification → payouts.
+Every transition is written to the audit log and pushed to the participants' live streams."""
 
 from __future__ import annotations
 
@@ -25,11 +26,11 @@ from ..models import (
     Payout,
     Proof,
 )
-from ..policy import PolicyResult, check_cart, check_terms, needs_human_approval, performance_payout
+from ..policy import PolicyResult, check_cart, check_terms, performance_payout
 from ..verifier.verify import all_passed, check_video
 from ..verifier.youtube import parse_video_id
 from ..wallet.gateway import GatewayRejected
-from ..wallet.signer import sign_payment_mandate, to_token_units
+from ..wallet.signer import mandate_from_signature, payment_authorization, payment_typed_data, recover_payment_mandate_signer, to_token_units
 from .context import AppContext
 
 log = logging.getLogger(__name__)
@@ -50,21 +51,41 @@ class DealService:
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
         self._lock = asyncio.Lock()  # serializes escrow/ledger mutations
+        self._owners: dict[str, str] = {}  # campaign → advertiser user, for live-event routing
+        self._deal_influencers: dict[str, str] = {}
 
     # ---- helpers -----------------------------------------------------------
 
     async def audit(self, campaign_id: str, deal_id: str | None, actor: str, kind: str, /, **detail: Any) -> None:
-        await self.ctx.store.add_event(
-            AuditEvent(at=self.ctx.clock.now(), campaign_id=campaign_id, deal_id=deal_id, actor=actor, kind=kind,
-                       detail=json.loads(json.dumps(detail, default=str)))
-        )  # fmt: skip
+        event = AuditEvent(at=self.ctx.clock.now(), campaign_id=campaign_id, deal_id=deal_id, actor=actor, kind=kind,
+                           detail=json.loads(json.dumps(detail, default=str)))  # fmt: skip
+        await self.ctx.store.add_event(event)
+        await self._publish({"type": "audit", "campaign_id": campaign_id, "deal_id": deal_id, "actor": actor, "kind": kind}, campaign_id, deal_id)
 
     async def save(self, deal: Deal, state: DealState | None = None) -> Deal:
         if state is not None:
             deal.state = state
         deal.updated_at = self.ctx.clock.now()
         await self.ctx.store.save_deal(deal)
+        self._deal_influencers[deal.id] = deal.influencer_id
+        await self._publish({"type": "deal", "campaign_id": deal.campaign_id, "deal_id": deal.id, "state": deal.state}, deal.campaign_id, deal.id)
         return deal
+
+    async def save_campaign(self, campaign: Campaign) -> None:
+        await self.ctx.store.save_campaign(campaign)
+        self._owners[campaign.spec.id] = campaign.spec.owner_id
+        await self._publish({"type": "campaign", "campaign_id": campaign.spec.id, "status": campaign.status}, campaign.spec.id, None)
+
+    async def _publish(self, event: dict[str, Any], campaign_id: str, deal_id: str | None) -> None:
+        if campaign_id not in self._owners and (c := await self.ctx.store.get_campaign(campaign_id)):
+            self._owners[campaign_id] = c.spec.owner_id
+        audience = {self._owners.get(campaign_id, "")}
+        if deal_id:
+            if deal_id not in self._deal_influencers and (d := await self.ctx.store.get_deal(deal_id)):
+                self._deal_influencers[deal_id] = d.influencer_id
+            audience.add(self._deal_influencers.get(deal_id, ""))
+        audience.discard("")
+        self.ctx.bus.publish(event, audience)
 
     async def get(self, deal_id: str) -> Deal:
         deal = await self.ctx.store.get_deal(deal_id)
@@ -82,12 +103,15 @@ class DealService:
         deals = await self.ctx.store.list_deals(campaign_id)
         return sum((d.terms.cap for d in deals if d.terms and d.id != exclude and d.state in COMMITTED), Decimal("0"))
 
-    def profile(self, influencer_id: str) -> InfluencerProfile:
-        return self.ctx.registry[influencer_id].profile
+    async def profile(self, influencer_id: str) -> InfluencerProfile:
+        reg = await self.ctx.registry.get(influencer_id)
+        if reg is None:
+            raise DealError(f"influencer {influencer_id} is no longer active")
+        return reg.profile
 
     async def notify_influencer(self, deal: Deal, message_type: str, /, **data: Any) -> None:
         """Tell the influencer's agent over A2A. Best effort: a down agent never blocks settlement."""
-        reg = self.ctx.registry.get(deal.influencer_id)
+        reg = await self.ctx.registry.get(deal.influencer_id)
         if reg is None:
             return
         try:
@@ -113,7 +137,7 @@ class DealService:
             status = "active"
         if status != c.status:
             c.status = status  # type: ignore[assignment]
-            await self.ctx.store.save_campaign(c)
+            await self.save_campaign(c)
 
     # ---- negotiation bookkeeping ------------------------------------------
 
@@ -151,7 +175,7 @@ class DealService:
         """Everything that must hold before the wallet may sign. Failure → BLOCKED, nothing signed."""
         terms = self._terms(deal)
         assert deal.cart_contents is not None
-        result = check_terms(spec, terms, self.profile(deal.influencer_id), agreed)
+        result = check_terms(spec, terms, await self.profile(deal.influencer_id), agreed)
         cart = check_cart(spec, terms, deal.cart_contents, self.ctx.token, self.ctx.escrow.address,
                           await self.committed_spend(deal.campaign_id, exclude=deal.id), self.ctx.clock.now())  # fmt: skip
         result.violations += cart.violations
@@ -161,22 +185,38 @@ class DealService:
             await self.save(deal, DealState.BLOCKED)
         return result
 
-    def approval_needed(self, deals: list[Deal]) -> bool:
-        total = sum((self._terms(d).cap for d in deals), Decimal("0"))
-        return needs_human_approval(total, self.ctx.settings.approval_threshold_usd)
+    async def await_signature(self, deal: Deal, payer: str) -> Deal:
+        """Drafts the EIP-3009 authorization the advertiser's wallet signs (simulated gateway; hosted mode
+        signs in HSP checkout). The draft is fixed server-side, so the browser can only sign it, not edit it."""
+        assert deal.cart_contents is not None
+        deal.payer = payer
+        if self.ctx.gateway.agent_signing:
+            now = int(self.ctx.clock.now().timestamp())
+            deal.mandate_draft = payment_authorization(payer, deal.cart_contents, self.ctx.token, now - 60, now + 3600)
+        return await self.save(deal, DealState.AWAITING_APPROVAL)
 
-    async def await_approval(self, deal: Deal) -> None:
-        await self.save(deal, DealState.AWAITING_APPROVAL)
+    def typed_data(self, deal: Deal) -> dict[str, Any] | None:
+        return payment_typed_data(deal.mandate_draft, self.ctx.token) if deal.mandate_draft else None
 
-    async def sign_and_submit(self, deal: Deal) -> Deal:
-        """Fixed code path after the policy gate (and human approval when required)."""
+    def signature_valid(self, deal: Deal, signature: str) -> bool:
+        if not (deal.mandate_draft and deal.cart_contents and deal.payment_request_id and deal.payer):
+            return False
+        mandate = mandate_from_signature(deal.mandate_draft, signature, deal.cart_contents, deal.payment_request_id, self.ctx.token)
+        return recover_payment_mandate_signer(mandate, self.ctx.token).lower() == deal.payer.lower()
+
+    async def submit_payment(self, deal: Deal, signature: str | None) -> Deal:
+        """Fixed code path after the policy gate and the advertiser's wallet signature."""
         assert deal.cart_contents is not None and deal.payment_request_id is not None
         if not self.ctx.gateway.agent_signing:
             await self.save(deal, DealState.AWAITING_CHECKOUT)
             await self.audit(deal.campaign_id, deal.id, "advertiser-agent", "awaiting_hosted_checkout", payment_url=deal.payment_url)
             return deal
-        now = int(self.ctx.clock.now().timestamp())
-        mandate = sign_payment_mandate(self.ctx.advertiser_key, deal.cart_contents, deal.payment_request_id, self.ctx.token, now - 60, now + 3600)
+        if signature is None or not self.signature_valid(deal, signature):
+            await self.save(deal, DealState.PAYMENT_FAILED)
+            await self.audit(deal.campaign_id, deal.id, "policy", "payment_signature_invalid", payer=deal.payer)
+            return deal
+        assert deal.mandate_draft is not None
+        mandate = mandate_from_signature(deal.mandate_draft, signature, deal.cart_contents, deal.payment_request_id, self.ctx.token)
         await self.save(deal, DealState.SIGNED)
         await self.audit(deal.campaign_id, deal.id, "wallet", "payment_mandate_signed", payer=mandate.payer,
                          value=mandate.authorization["value"], to=mandate.authorization["to"], scheme="x402 exact / EIP-3009")  # fmt: skip
@@ -250,6 +290,8 @@ class DealService:
         video_id = parse_video_id(video_ref)
         if video_id is None:
             raise DealError("not a YouTube URL or video id")
+        if self.ctx.videos is None:
+            raise DealError("the verifier is offline: set YOUTUBE_API_KEY")
         spec = (await self.campaign(deal.campaign_id)).spec
         video = await self.ctx.videos.get_video(video_id)
         assert deal.agreed_at is not None
@@ -300,6 +342,8 @@ class DealService:
     async def _recheck(self, deal: Deal) -> tuple[bool, int]:
         assert deal.proof is not None and deal.agreed_at is not None
         spec = (await self.campaign(deal.campaign_id)).spec
+        if self.ctx.videos is None:
+            raise DealError("the verifier is offline: set YOUTUBE_API_KEY")
         video = await self.ctx.videos.get_video(deal.proof.video_id)
         checks = check_video(self._terms(deal), video, deal.agreed_at, spec.brand_handle)
         return all_passed(checks), video.views if video else 0
@@ -336,7 +380,7 @@ class DealService:
             tx, refunded_units = await asyncio.to_thread(self.ctx.escrow.close, deal.id)
         refund = Decimal(refunded_units) / (Decimal(10) ** self.ctx.token.decimals)
         if refund > 0:
-            deal.payouts.append(Payout(kind="refund", to=self.ctx.advertiser_address, amount=refund, tx_hash=tx, at=self.ctx.clock.now()))
+            deal.payouts.append(Payout(kind="refund", to=deal.payer or "", amount=refund, tx_hash=tx, at=self.ctx.clock.now()))
         await self.audit(deal.campaign_id, deal.id, "escrow", "deal_closed", views=views, performance=amount, refunded=refund, tx=tx)
         await self.save(deal, DealState.COMPLETED)
 
@@ -344,7 +388,7 @@ class DealService:
         async with self._lock:
             tx, units = await asyncio.to_thread(self.ctx.escrow.refund_expired, deal.id, int(self.ctx.clock.now().timestamp()))
         refund = Decimal(units) / (Decimal(10) ** self.ctx.token.decimals)
-        deal.payouts.append(Payout(kind="refund", to=self.ctx.advertiser_address, amount=refund, tx_hash=tx, at=self.ctx.clock.now()))
+        deal.payouts.append(Payout(kind="refund", to=deal.payer or "", amount=refund, tx_hash=tx, at=self.ctx.clock.now()))
         await self.audit(deal.campaign_id, deal.id, "escrow", "expired_refunded", refunded=refund, tx=tx)
         await self.save(deal, DealState.EXPIRED_REFUNDED)
 

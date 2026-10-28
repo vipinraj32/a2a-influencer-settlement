@@ -38,9 +38,7 @@ class Attestor:
             raise ValueError("refusing to attest: not all checks passed")
         # Random nonce: unique across restarts without persisting a counter
         nonce = secrets.randbits(64)
-        evidence = json.dumps(
-            {"deal_id": deal_id, "video_id": video_id, "views": views, "checks": [c.model_dump() for c in checks]}, sort_keys=True
-        )
+        evidence = json.dumps({"deal_id": deal_id, "video_id": video_id, "views": views, "checks": [c.model_dump() for c in checks]}, sort_keys=True)
         digest = attestation_digest(self.escrow_address, self.chain_id, deal_id, payee, to_token_units(amount, self.decimals), nonce)
         signature = Account.sign_message(encode_defunct(primitive=digest), private_key=self._key).signature
         return Attestation(

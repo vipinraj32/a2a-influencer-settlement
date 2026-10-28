@@ -15,3 +15,6 @@ wheels/
 !.env.example
 keys/
 *.pem
+
+# Built web app (cd web && npm run build)
+src/zyroxq/api/static/

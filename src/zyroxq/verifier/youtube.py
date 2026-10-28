@@ -64,7 +64,7 @@ class YouTubeDataApi:
 
 
 class FixtureVideoSource:
-    """Demo stand-in for the YouTube API. Each video's views grow linearly to `week_one_views` over 7 days."""
+    """Test stand-in for the YouTube API. Each video's views grow linearly to `week_one_views` over 7 days."""
 
     def __init__(self, now: Callable[[], datetime]) -> None:
         self._now = now

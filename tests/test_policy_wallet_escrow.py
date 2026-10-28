@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from eth_account import Account
+from eth_account.messages import encode_defunct
 
 from zyroxq.chain import EscrowError, SimulatedEscrow
 from zyroxq.clock import Clock
@@ -19,13 +20,18 @@ TOKEN = find_token("hashkey-testnet", "USDC")
 
 def cart_for(terms, pay_to, total=None, expires=None):
     return build_cart_contents(
-        terms.deal_id, f"PAY-{terms.deal_id}", "ZyroXQ", TOKEN, pay_to,
+        terms.deal_id,
+        f"PAY-{terms.deal_id}",
+        "ZyroXQ",
+        TOKEN,
+        pay_to,
         [("Fixed fee", terms.fixed_fee), ("Performance (max)", (total or terms.cap) - terms.fixed_fee)],
         expires or datetime.now(UTC) + timedelta(hours=2),
     )
 
 
 # --- policy ---------------------------------------------------------------
+
 
 def test_offer_within_bounds(campaign, offer):
     assert check_offer(campaign, offer).ok
@@ -62,6 +68,24 @@ def test_terms_amount_tamper_breaks_signature(campaign, influencer, offer, terms
     assert not r.ok
 
 
+def test_terms_signed_by_authorized_agent_key(campaign, identity, offer, terms):
+    from zyroxq.wallet.signer import sign_terms
+
+    by_agent = sign_terms(identity.private_key, terms)
+    assert check_terms(campaign, by_agent, identity.profile, offer).ok
+    # The wallet itself is no longer the expected signer once an agent key is registered
+    assert not check_terms(campaign, terms, identity.profile, offer).ok
+
+
+def test_agent_key_without_wallet_delegation_is_blocked(campaign, identity, offer, terms):
+    from zyroxq.wallet.signer import sign_terms
+
+    forged = Account.sign_message(encode_defunct(text=identity.profile.delegation), "0x" + "99" * 32).signature.hex()
+    profile = identity.profile.model_copy(update={"delegation_signature": "0x" + forged.removeprefix("0x")})
+    result = check_terms(campaign, sign_terms(identity.private_key, terms), profile, offer)
+    assert "agent key is not authorized by the influencer's wallet" in result.violations
+
+
 def test_cart_checks(campaign, terms):
     escrow = "0x" + "ee" * 20
     now = datetime.now(UTC)
@@ -81,6 +105,7 @@ def test_approval_and_performance(terms):
 
 
 # --- gateway + mandate -----------------------------------------------------
+
 
 async def funded_gateway(terms):
     clock = Clock()
@@ -123,6 +148,7 @@ async def test_gateway_rejects_tampered_mandate(terms):
 
 
 # --- escrow + attestation --------------------------------------------------
+
 
 def test_escrow_release_requires_verifier_attestation(terms):
     escrow = SimulatedEscrow(verifier=Account.from_key(VERIFIER_KEY).address)

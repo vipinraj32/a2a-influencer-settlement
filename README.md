@@ -33,40 +33,49 @@ ZyroXQ is a decentralized influencer-marketing platform built for the HashKey **
 | Piece | Status |
 |---|---|
 | HSP merchant client (HMAC, ES256K Cart Mandate JWT, orders, payments, webhooks) | ✅ Built, unit-tested; not yet run against the live QA gateway |
-| Policy engine (offers, signed terms, cart gate, budget, approval threshold) | ✅ Built and tested |
+| Policy engine (offers, signed terms, agent-key delegation, cart gate, budget) | ✅ Built and tested |
 | Payment Mandate (x402 `exact` / EIP-3009 signature) + simulated HSP gateway | ✅ Built and tested |
-| Influencer + Advertiser agents (LangGraph, A2A, parallel negotiation, human approval) | ✅ Built and tested end to end |
-| Verifier (YouTube checks, prompt-injection flag, signed attestations) | ✅ Built; live YouTube API path untested without a key |
+| Influencer + Advertiser agents (LangGraph, A2A, parallel negotiation, wallet-signature pause) | ✅ Built and tested end to end |
+| Verifier (YouTube checks, prompt-injection flag, signed attestations) | ✅ Built; uses the YouTube Data API key |
 | CampaignEscrow.sol + Python escrow (simulated ledger / on-chain) | ✅ Compiles; simulated ledger tested; not yet deployed |
 | MCP server (read-only tools) + LangChain assistant | ✅ Tools tested over streamable HTTP; assistant needs `ANTHROPIC_API_KEY` |
 | PostgreSQL store + LangGraph Postgres checkpointer | ✅ Built; needs a database to test (`TEST_DATABASE_URL`) |
-| Dashboard UI | ✅ Built |
+| Google sign-in + YouTube channel proof + MetaMask wallet linking | ✅ Built; OAuth flow tested with mocked Google |
+| React + TypeScript web app (login → onboarding → advertiser / influencer workspaces, live SSE updates) | ✅ Built; typechecked |
 | HSP merchant onboarding (`app_key` / `app_secret`) | 🚧 Pending |
 
-### Run the demo
+### Run it
 
 ```bash
 uv sync
-uv run zyroxq serve          # http://localhost:8000
+cd web && npm install && npm run build && cd ..   # builds the React app into src/zyroxq/api/static
+uv run zyroxq serve                              # http://localhost:8000
 ```
 
-With no configuration everything runs locally: the HSP gateway and escrow are emulated in-process (same signature and
-amount checks), demo videos stand in for YouTube, and agents negotiate with deterministic strategies. The dashboard's
-top bar shows what is simulated. Add keys to `.env` to switch each piece to the real one:
+Frontend development with hot reload: run `uv run zyroxq serve`, then `cd web && npm run dev`, open
+http://localhost:5173 and set `FRONTEND_URL=http://localhost:5173` in `.env`.
 
-| Set in `.env` | Switches on |
+The app has no dummy data: people sign in with Google. **Advertisers** link a MetaMask wallet and launch campaigns.
+**Influencers** grant read-only YouTube access, which proves their channel; link a payout wallet, which also authorizes
+their agent key; and set their rates. Everything updates live over Server-Sent Events.
+
+| Set in `.env` | Needed for |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude-powered negotiation, brief drafting, campaign assistant |
-| `DATABASE_URL` | PostgreSQL storage + LangGraph checkpoints |
-| `YOUTUBE_API_KEY` | Real YouTube Data API proof checks (paste real Short URLs) |
+| `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` | Sign-in (redirect URI `{PUBLIC_BASE_URL}/auth/google/callback`) |
+| `SESSION_SECRET` | Sessions and encrypted influencer agent keys that survive restarts |
+| `YOUTUBE_API_KEY` | Verifying posts (YouTube Data API v3) |
+| `DATABASE_URL` | Keeping users, deals and LangGraph checkpoints across restarts |
+| `ANTHROPIC_API_KEY` | Claude negotiation, brief drafting and the campaign assistant (rules otherwise) |
+| `VERIFIER_PRIVATE_KEY` | A stable attestation key (random per run otherwise) |
 | `ESCROW_ADDRESS` + `OPERATOR_PRIVATE_KEY` | On-chain CampaignEscrow (`uv run python scripts/deploy_escrow.py`) |
-| `SETTLEMENT_MODE=hosted` + HSP credentials | Real HSP orders; the advertiser signs in HSP's hosted checkout |
+| `SETTLEMENT_MODE=hosted` + HSP credentials | Real HSP orders; the advertiser pays in HSP's hosted checkout |
 
-**Demo script:** launch the default campaign → watch four A2A negotiations → approve the $120 batch → three deals are
-funded → *Post video* on one deal, *Copied URL* and *Injection* on the others → **+49 h** releases the fixed fee →
-**+7 days** pays performance from views, refunds the rest and expires the fake proofs.
+Until HSP credentials and the escrow are set, the gateway and escrow are emulated in-process with the same checks,
+and the advertiser's **browser wallet** still signs the real EIP-712 Payment Mandate. The top bar shows what is
+simulated. With the simulated escrow, **+49 h / +7 days** move the clock to trigger releases.
 
-MCP for Claude Desktop (server must be running): `uv run zyroxq mcp` over stdio, or connect to `http://localhost:8000/mcp/`.
+MCP for Claude Desktop (server must be running): `uv run zyroxq mcp` over stdio with `ZYROXQ_API_TOKEN` set to
+`MCP_API_TOKEN`, or connect to `http://localhost:8000/mcp/` with that bearer token.
 
 ---
 
@@ -170,9 +179,9 @@ Advertiser Agent [policy_gate]  ← deterministic checks:
     ✔ chain/token allowed            ✔ total spend ≤ campaign budget
     ✔ no duplicate deal_id           ✔ cart not expired
    │
-   ├─ amount > approval threshold → [human_approval] LangGraph interrupt → advertiser clicks Approve
+   ├─ [approval] LangGraph interrupt → server drafts the EIP-712 data → advertiser signs in MetaMask
    ▼
-[sign_payment_mandate]  wallet signs EIP-712 (code node, NOT an LLM tool)
+[verify + submit]       server checks the signer == campaign payer (code node, NOT an LLM tool)
 [submit_to_hsp]         HSP Gateway verifies → broadcasts on-chain
 ```
 
@@ -232,7 +241,7 @@ plan_campaign → discover → ┬─ negotiate_deal (subgraph, ×N in parallel)
                            │   policy_check → {counter | accept | reject} │
                            └──────────────────────────────────────────────┘
                 → collect_accepted → request_cart → policy_gate
-                → [human_approval?] → sign_mandate → submit_hsp
+                → [approval: wallet signs in browser] → verify_signature → submit_hsp
                 → await_funding → monitor_deals → END
 ```
 
@@ -268,20 +277,21 @@ src/zyroxq/
   __init__.py          CLI: zyroxq serve | mcp | gen-merchant-key
   config.py            pydantic-settings (.env)
   models.py            CampaignSpec, Offer, DealTerms, Deal, DealState, Attestation, AuditEvent
-  clock.py             wall clock with demo fast-forward
+  clock.py             wall clock with dev fast-forward (simulated escrow only)
   hsp/                 canonical · auth (HMAC, ES256K JWT) · cart · client · webhook · networks
   policy/engine.py     every payment rule, pure functions
   wallet/              signer (EIP-3009 Payment Mandate, EIP-191 terms) · gateway (simulated / hosted HSP)
   chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
-  verifier/            youtube (Data API / demo fixtures) · verify (checks) · attest (signed releases)
-  agents/influencer/   LangGraph negotiation graph + A2A server (Agent Card, JSON-RPC)
+  verifier/            youtube (Data API; fixture source for tests) · verify (checks) · attest (signed releases)
+  auth/                Google OAuth + YouTube channel proof · wallet-link messages · agent-key encryption · API tokens
+  agents/influencer/   LangGraph negotiation graph + A2A server + hub (one agent per onboarded creator)
   agents/advertiser/   LangGraph campaign graph · negotiation moves · runner · MCP assistant
   agents/a2a_client.py A2A client connector
-  services/            context (wires backends) · deals (lifecycle, webhooks, payouts)
+  services/            context (wires backends) · deals (lifecycle, webhooks, payouts) · registry · events (SSE bus)
   store/               memory + PostgreSQL (JSONB) stores
   mcp_servers/         read-only FastMCP server
-  api/                 FastAPI app + static dashboard
-  demo/fixtures.py     demo influencers
+  api/                 FastAPI app (sessions, role-scoped REST, SSE, SPA host)
+web/                   React + TypeScript + Vite app (login → onboarding → advertiser / influencer workspaces)
 contracts/CampaignEscrow.sol (+ build/ ABI)
 scripts/               compile_contracts · deploy_escrow · smoke_hsp_order
 tests/
@@ -298,7 +308,7 @@ tests/
 | 5 | Verifier (YouTube) + attestation | Proof-of-post |
 | 6 | Escrow contract + release/refund | Conditional payouts |
 | 7 | MCP servers + LangSmith traces | Polish and observability |
-| 8 | Dashboard + attack demos + demo video | The pitch |
+| 8 | Web app + attack tests + demo video | The pitch |
 
 ## Open questions for the HashKey team
 
@@ -316,8 +326,9 @@ Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync                      # or: pip install -r requirements.txt
-cp .env.example .env         # fill in API keys and HSP credentials
-uv run zyroxq
+cp .env.example .env         # fill in Google OAuth, SESSION_SECRET, YOUTUBE_API_KEY, ...
+cd web && npm install && npm run build && cd ..
+uv run zyroxq serve
 ```
 
 Development:
@@ -326,6 +337,7 @@ Development:
 uv run pytest
 uv run ruff check .
 uv run ruff format .
+cd web && npm run typecheck
 ```
 
 `pyproject.toml` and `uv.lock` are the source of truth. After `uv add`, regenerate the pip files:

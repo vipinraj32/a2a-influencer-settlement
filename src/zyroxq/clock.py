@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 
 class Clock:
-    """Wall clock with a demo offset, so the UI can fast-forward review windows and T+7d payouts."""
+    """Wall clock with an offset (simulated escrow only), so the UI can fast-forward review windows and T+7d payouts."""
 
     def __init__(self) -> None:
         self._offset = timedelta()

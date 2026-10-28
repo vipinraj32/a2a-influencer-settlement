@@ -162,9 +162,7 @@ class OnchainEscrow:
         self.token = to_checksum_address(token_address)
 
     def _send(self, fn: Any) -> str:
-        tx = fn.build_transaction(
-            {"from": self.account.address, "nonce": self.w3.eth.get_transaction_count(self.account.address), "chainId": self.chain_id}
-        )
+        tx = fn.build_transaction({"from": self.account.address, "nonce": self.w3.eth.get_transaction_count(self.account.address), "chainId": self.chain_id})
         signed = self.account.sign_transaction(tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)

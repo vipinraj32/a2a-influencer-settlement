@@ -17,14 +17,13 @@ SYSTEM = (
 class Assistant:
     def __init__(self, llm: BaseChatModel, mcp_url: str) -> None:
         self.llm = llm
-        self.client = MultiServerMCPClient({"zyroxq": {"transport": "streamable_http", "url": mcp_url}})
-        self._agent = None
+        self.mcp_url = mcp_url
 
-    async def ask(self, question: str) -> str:
-        if self._agent is None:
-            tools = await self.client.get_tools()
-            self._agent = create_agent(self.llm, tools=tools, system_prompt=SYSTEM)
-        result = await self._agent.ainvoke({"messages": [{"role": "user", "content": question}]})
+    async def ask(self, question: str, user_token: str) -> str:
+        """`user_token` scopes the MCP tools to the asking advertiser's campaigns."""
+        client = MultiServerMCPClient({"zyroxq": {"transport": "streamable_http", "url": self.mcp_url, "headers": {"Authorization": f"Bearer {user_token}"}}})
+        agent = create_agent(self.llm, tools=await client.get_tools(), system_prompt=SYSTEM)
+        result = await agent.ainvoke({"messages": [{"role": "user", "content": question}]})
         content = result["messages"][-1].content
         if isinstance(content, list):
             return "".join(part.get("text", "") for part in content if isinstance(part, dict))

@@ -34,8 +34,68 @@ class InfluencerProfile(BaseModel):
     channel_id: str  # OAuth-verified at onboarding
     subscribers: int
     niche: str
-    wallet: str
+    wallet: str  # payout address, proven by a wallet signature
     rate_card: RateCard
+    # Key the influencer's agent signs DealTerms with; empty means the wallet signs directly.
+    # `delegation` is the message the wallet signed to authorize that key.
+    agent_signer: str = ""
+    delegation: str = ""
+    delegation_signature: str = ""
+    avatar_url: str = ""
+
+
+class ChannelInfo(BaseModel):
+    channel_id: str
+    title: str
+    subscribers: int
+    thumbnail_url: str = ""
+    verified_at: datetime
+
+
+class User(BaseModel):
+    """A signed-in Google account. Influencers prove their YouTube channel through the same OAuth."""
+
+    id: str
+    email: str
+    name: str
+    picture: str = ""
+    role: Literal["advertiser", "influencer"]
+    created_at: datetime
+    wallet: str = ""  # linked with an EIP-191 signature
+    # advertiser
+    company: str = ""
+    brand_handle: str = ""
+    # influencer
+    channel: ChannelInfo | None = None
+    niche: str = ""
+    rate_card: RateCard | None = None
+    persona: str = ""
+    agent_active: bool = False
+    agent_signer: str = ""
+    agent_key_encrypted: str = ""  # Fernet; never leaves the server
+    delegation: str = ""
+    delegation_signature: str = ""
+
+    def public(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude={"agent_key_encrypted"})
+
+    def influencer_profile(self) -> InfluencerProfile | None:
+        """The profile advertisers' agents see, once onboarding is complete."""
+        if self.role != "influencer" or not (self.channel and self.wallet and self.rate_card and self.niche and self.agent_signer):
+            return None
+        return InfluencerProfile(
+            id=self.id,
+            name=self.channel.title,
+            channel_id=self.channel.channel_id,
+            subscribers=self.channel.subscribers,
+            niche=self.niche,
+            wallet=self.wallet,
+            rate_card=self.rate_card,
+            agent_signer=self.agent_signer,
+            delegation=self.delegation,
+            delegation_signature=self.delegation_signature,
+            avatar_url=self.channel.thumbnail_url,
+        )
 
 
 class CampaignSpec(BaseModel):
@@ -54,6 +114,8 @@ class CampaignSpec(BaseModel):
     publish_within_days: int = 7
     required_tags: list[str] = Field(default_factory=lambda: ["#ad"])
     brief: str = ""
+    owner_id: str = ""  # advertiser user
+    payer: str = ""  # advertiser wallet that signs the Payment Mandates
 
 
 class Offer(BaseModel):
@@ -174,6 +236,8 @@ class Deal(BaseModel):
     payment_request_id: str | None = None
     payment_url: str | None = None
     payment_status: str | None = None
+    payer: str | None = None
+    mandate_draft: dict[str, Any] | None = None  # EIP-3009 authorization the payer's wallet signs
     funding_tx: str | None = None
     proof: Proof | None = None
     attestations: list[Attestation] = Field(default_factory=list)

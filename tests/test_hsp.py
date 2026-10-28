@@ -70,16 +70,19 @@ def test_merchant_jwt_es256k_low_s_and_verifiable():
 def test_rejects_non_secp256k1_key():
     from cryptography.hazmat.primitives import serialization
 
-    pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    )
+    pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     with pytest.raises(ValueError):
         load_private_key(pem)
 
 
 def make_cart(items=(("Fixed fee", Decimal("20.10")), ("Performance cap", Decimal("0.20")))):
     return build_cart_contents(
-        "ZXQ-1", "PAY-1", "ZyroXQ", find_token("hashkey-testnet", "USDC"), "0x" + "01" * 20, list(items),
+        "ZXQ-1",
+        "PAY-1",
+        "ZyroXQ",
+        find_token("hashkey-testnet", "USDC"),
+        "0x" + "01" * 20,
+        list(items),
         datetime(2026, 11, 1, tzinfo=UTC),
     )
 
@@ -122,8 +125,9 @@ async def test_client_sends_canonical_body_with_matching_hmac():
     req = route.calls.last.request
     body = req.content.decode()
     assert body == canonical_json(json.loads(body))
-    expected = sign_request("ak", "secret", "POST", "/api/v1/merchant/orders", body=body,
-                            timestamp=int(req.headers["X-Timestamp"]), nonce=req.headers["X-Nonce"])
+    expected = sign_request(
+        "ak", "secret", "POST", "/api/v1/merchant/orders", body=body, timestamp=int(req.headers["X-Timestamp"]), nonce=req.headers["X-Nonce"]
+    )
     assert req.headers["X-Signature"] == expected["X-Signature"]
     # merchant JWT binds this exact cart
     jwt = json.loads(body)["cart_mandate"]["merchant_authorization"]

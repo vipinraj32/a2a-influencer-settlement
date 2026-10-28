@@ -1,4 +1,4 @@
-"""Influencer agents as A2A servers: one FastAPI sub-app (Agent Card + JSON-RPC) per creator."""
+"""Influencer agents as A2A servers: one FastAPI sub-app (Agent Card + JSON-RPC) per onboarded creator."""
 
 from __future__ import annotations
 
@@ -17,17 +17,18 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
 from ...clock import Clock
-from ...demo.fixtures import DemoInfluencer
 from .graph import build_influencer_graph
+from .identity import InfluencerIdentity
 
 NEGOTIATE_SKILL = "negotiate-sponsorship"
 
 
-def agent_card(me: DemoInfluencer, url: str) -> AgentCard:
+def agent_card(me: InfluencerIdentity, url: str) -> AgentCard:
     p = me.profile
     return AgentCard(
         name=f"{p.name} — sponsorship agent",
-        description=f"Negotiates paid YouTube Shorts for {p.name} ({p.subscribers:,} subs, {p.niche}). Signs deal terms; payee {p.wallet}.",
+        description=f"Negotiates paid YouTube Shorts for {p.name} ({p.subscribers:,} subs, {p.niche}). "
+        f"Signs deal terms with agent key {p.agent_signer}; payee {p.wallet}.",
         version="0.1.0",
         supported_interfaces=[AgentInterface(url=url, protocol_binding="JSONRPC", protocol_version="1.0")],
         provider=AgentProvider(organization="ZyroXQ", url="https://github.com/vipinraj32/a2a-influencer-settlement"),
@@ -47,10 +48,10 @@ def agent_card(me: DemoInfluencer, url: str) -> AgentCard:
 
 
 class InfluencerExecutor(AgentExecutor):
-    def __init__(self, me: DemoInfluencer, clock: Clock, llm: BaseChatModel | None) -> None:
+    def __init__(self, me: InfluencerIdentity, clock: Clock, llm: BaseChatModel | None, inbox: list[dict[str, Any]] | None = None) -> None:
         self.me = me
         self.graph = build_influencer_graph(me, clock, llm, InMemorySaver())
-        self.inbox: list[dict[str, Any]] = []  # settlement notices, shown in the influencer portal
+        self.inbox: list[dict[str, Any]] = inbox if inbox is not None else []  # settlement notices, shown in the influencer portal
 
     async def execute(self, context: RequestContext, event_queue) -> None:
         parts = get_data_parts(context.message.parts) if context.message else []
@@ -74,9 +75,11 @@ class InfluencerExecutor(AgentExecutor):
         return None
 
 
-def build_influencer_app(me: DemoInfluencer, url: str, clock: Clock, llm: BaseChatModel | None) -> tuple[FastAPI, InfluencerExecutor]:
+def build_influencer_app(
+    me: InfluencerIdentity, url: str, clock: Clock, llm: BaseChatModel | None, inbox: list[dict[str, Any]] | None = None
+) -> tuple[FastAPI, InfluencerExecutor]:
     card = agent_card(me, url)
-    executor = InfluencerExecutor(me, clock, llm)
+    executor = InfluencerExecutor(me, clock, llm, inbox)
     handler = DefaultRequestHandlerV2(agent_executor=executor, task_store=InMemoryTaskStore(), agent_card=card)
     app = FastAPI(title=card.name)
     add_a2a_routes_to_fastapi(app, agent_card_routes=create_agent_card_routes(card), jsonrpc_routes=create_jsonrpc_routes(handler, rpc_url="/"))

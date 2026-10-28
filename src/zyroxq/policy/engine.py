@@ -17,6 +17,7 @@ from eth_account.messages import encode_defunct
 from ..hsp.cart import cart_method, cart_total
 from ..hsp.networks import TokenInfo
 from ..models import CampaignSpec, DealTerms, InfluencerProfile, Offer
+from ..wallet.signer import recover_personal_sign
 
 # Offers the advertiser may send: opening + up to 3 responses to counter-offers
 MAX_ROUNDS = 4
@@ -69,8 +70,23 @@ def check_terms(campaign: CampaignSpec, terms: DealTerms, influencer: Influencer
     )
     r.require(set(campaign.required_tags) <= set(terms.required_tags), "required tags were dropped")
     signer = recover_terms_signer(terms)
-    r.require(signer is not None and signer.lower() == influencer.wallet.lower(), "influencer signature invalid")
+    expected = influencer.agent_signer or influencer.wallet
+    r.require(signer is not None and signer.lower() == expected.lower(), "influencer signature invalid")
+    if influencer.agent_signer and influencer.agent_signer.lower() != influencer.wallet.lower():
+        r.require(delegation_valid(influencer), "agent key is not authorized by the influencer's wallet")
     return r
+
+
+def delegation_valid(influencer: InfluencerProfile) -> bool:
+    """The payout wallet signed a message naming this agent key and channel."""
+    lines = set(influencer.delegation.splitlines())
+    signer = recover_personal_sign(influencer.delegation, influencer.delegation_signature)
+    return (
+        signer is not None
+        and signer.lower() == influencer.wallet.lower()
+        and f"Agent signer: {influencer.agent_signer}" in lines
+        and f"Channel: {influencer.channel_id}" in lines
+    )
 
 
 def check_cart(

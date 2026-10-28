@@ -144,6 +144,8 @@ idna==3.20
     #   httpx2
     #   requests
     #   yarl
+itsdangerous==2.2.0
+    # via zyroxq
 jiter==0.18.0
     # via anthropic
 json-rpc==1.15.0

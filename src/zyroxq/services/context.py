@@ -1,8 +1,12 @@
 """Wires backends from settings. Simulated pieces are used only when the real ones aren't configured,
-and hosted (real HSP) mode refuses to start without an on-chain escrow so funds never go to a fake address."""
+and hosted (real HSP) mode refuses to start without an on-chain escrow so funds never go to a fake address.
+
+Influencers come from the user store (see registry.py); payers sign in their own browser wallet, so
+the server holds no advertiser key."""
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,20 +18,14 @@ from ..agents.a2a_client import A2AConnector
 from ..chain.escrow import Escrow, OnchainEscrow, SimulatedEscrow
 from ..clock import Clock
 from ..config import Settings, SettlementMode
-from ..demo.fixtures import DEMO_INFLUENCERS, DemoInfluencer, demo_key
 from ..hsp.client import HspClient
 from ..hsp.networks import TokenInfo, find_token
-from ..models import InfluencerProfile
 from ..store import MemoryStore, PostgresStore, Store
 from ..verifier.attest import Attestor
-from ..verifier.youtube import FixtureVideoSource, VideoSource, YouTubeDataApi
+from ..verifier.youtube import VideoSource, YouTubeDataApi
 from ..wallet.gateway import Gateway, HostedGateway, SimulatedGateway
-
-
-@dataclass
-class Registration:
-    profile: InfluencerProfile
-    agent_url: str
+from .events import EventBus
+from .registry import InfluencerRegistry
 
 
 @dataclass
@@ -39,18 +37,12 @@ class AppContext:
     escrow: Escrow
     gateway: Gateway
     attestor: Attestor
-    videos: VideoSource
-    fixture_videos: FixtureVideoSource | None
-    advertiser_key: str
+    videos: VideoSource | None  # None until YOUTUBE_API_KEY is set: proofs cannot be verified
     a2a: A2AConnector
     llm: BaseChatModel | None
-    registry: dict[str, Registration] = field(default_factory=dict)
-    demo_influencers: dict[str, DemoInfluencer] = field(default_factory=dict)
+    registry: InfluencerRegistry
+    bus: EventBus = field(default_factory=EventBus)
     warnings: list[str] = field(default_factory=list)
-
-    @property
-    def advertiser_address(self) -> str:
-        return Account.from_key(self.advertiser_key).address
 
 
 def chat_model(settings: Settings) -> BaseChatModel | None:
@@ -78,10 +70,14 @@ async def build_context(
         store = MemoryStore()
         warnings.append("DATABASE_URL not set: using the in-memory store (data is lost on restart)")
 
-    verifier_key = settings.verifier_private_key or demo_key("verifier")
-    advertiser_key = settings.advertiser_private_key or demo_key("advertiser")
-    if not settings.verifier_private_key or not settings.advertiser_private_key:
-        warnings.append("Using demo verifier/advertiser keys derived from public seeds")
+    verifier_key = settings.verifier_private_key
+    if not verifier_key:
+        verifier_key = "0x" + secrets.token_hex(32)
+        warnings.append("VERIFIER_PRIVATE_KEY not set: using a random verifier key for this run")
+    secret = settings.session_secret
+    if not secret:
+        secret = secrets.token_hex(32)
+        warnings.append("SESSION_SECRET not set: sessions and influencer agent keys reset on restart")
 
     escrow: Escrow
     if settings.escrow_address and settings.operator_private_key:
@@ -102,13 +98,13 @@ async def build_context(
         gateway = SimulatedGateway(token, escrow, clock, settings.public_base_url)
         warnings.append("SETTLEMENT_MODE=simulated: HSP gateway and escrow are emulated in-process")
 
-    fixture_videos: FixtureVideoSource | None = None
-    videos: VideoSource
+    videos: VideoSource | None = None
     if settings.youtube_api_key:
         videos = YouTubeDataApi(settings.youtube_api_key)
     else:
-        videos = fixture_videos = FixtureVideoSource(clock.now)
-        warnings.append("YOUTUBE_API_KEY not set: proof checks use demo videos")
+        warnings.append("YOUTUBE_API_KEY not set: video proofs cannot be verified")
+    if not (settings.google_oauth_client_id and settings.google_oauth_client_secret):
+        warnings.append("GOOGLE_OAUTH_CLIENT_ID / _SECRET not set: nobody can sign in")
 
     ctx = AppContext(
         settings=settings,
@@ -119,17 +115,12 @@ async def build_context(
         gateway=gateway,
         attestor=Attestor(verifier_key, escrow.address, escrow.chain_id, token.decimals),
         videos=videos,
-        fixture_videos=fixture_videos,
-        advertiser_key=advertiser_key,
         a2a=A2AConnector(a2a_http or httpx.AsyncClient(timeout=60)),
         llm=llm if llm is not None else chat_model(settings),
+        registry=InfluencerRegistry(store, settings.public_base_url, secret),
         warnings=warnings,
     )
+    ctx.settings = settings.model_copy(update={"session_secret": secret})
     if ctx.llm is None:
         warnings.append("ANTHROPIC_API_KEY not set: agents negotiate with deterministic strategies")
-
-    base = settings.public_base_url.rstrip("/")
-    for demo in DEMO_INFLUENCERS:
-        ctx.demo_influencers[demo.profile.id] = demo
-        ctx.registry[demo.profile.id] = Registration(demo.profile, f"{base}/a2a/influencers/{demo.profile.id}/")
     return ctx

@@ -15,7 +15,9 @@ Core rule: **the LLM proposes, deterministic code decides, the key signs.** No p
 Python 3.13 project managed with uv; package in `src/zyroxq/` (see README "Folder structure").
 - `services/deals.py` owns the deal lifecycle; `agents/advertiser/graph.py` only negotiates, gates and signs through it.
 - Simulated vs real backends are chosen in `services/context.py` from settings; hosted HSP mode refuses to start without an on-chain escrow.
-- Signing (Payment Mandate, terms, attestations) happens only in fixed code paths after `policy/` checks — never expose it as an LLM/MCP tool.
+- Signing happens only in fixed code paths after `policy/` checks — never expose it as an LLM/MCP tool. The advertiser's browser wallet signs the Payment Mandate (server drafts the EIP-712 data, verifies the signature); influencer agents sign terms with a server-held agent key that the payout wallet authorized (`policy.delegation_valid`).
+- No demo fixtures: users sign in with Google (`auth/`); influencers come from the user store (`services/registry.py`) and are served by `agents/influencer/hub.py`. `FixtureVideoSource` is for tests only.
+- Frontend: `web/` (React + TypeScript + Vite). `npm run build` writes to `src/zyroxq/api/static` (gitignored); `npm run dev` on :5173 proxies the API on :8000. Live updates come from `/api/stream` (SSE, filtered per user).
 - Escrow rules exist twice (`contracts/CampaignEscrow.sol` and `chain/escrow.py` SimulatedEscrow) — change both together; `attestation_digest` must match the contract.
 - Recompile the contract with `uv run python scripts/compile_contracts.py` (writes `contracts/build/CampaignEscrow.json`).
 
@@ -32,7 +34,7 @@ Python 3.13 project managed with uv; package in `src/zyroxq/` (see README "Folde
 - `uv add <pkg>` / `uv add --dev <pkg>` — then regenerate the requirements files:
   `uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -o requirements.txt`
   `uv export --format requirements-txt --no-hashes --only-dev --no-emit-project -o requirements-dev.txt`
-- `uv run zyroxq serve` (dashboard at http://localhost:8000) · `uv run zyroxq mcp` · `uv run zyroxq gen-merchant-key`
+- `cd web && npm install && npm run build` then `uv run zyroxq serve` (app at http://localhost:8000); `cd web && npm run dev` for hot reload · `uv run zyroxq mcp` · `uv run zyroxq gen-merchant-key`
 - `uv run pytest` · `uv run ruff check .` · `uv run ruff format .` — set `TEST_DATABASE_URL` to run the PostgreSQL store test
 - Windows: psycopg async needs a SelectorEventLoop; the CLI and tests set it — keep it that way.
 - `pyproject.toml` + `uv.lock` are the source of truth; `requirements*.txt` are generated for pip users — never edit them by hand.

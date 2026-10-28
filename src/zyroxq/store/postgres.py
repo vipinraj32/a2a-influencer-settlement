@@ -5,7 +5,7 @@ from __future__ import annotations
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from ..models import AuditEvent, Campaign, Deal
+from ..models import AuditEvent, Campaign, Deal, User
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS audit_events (
     detail      JSONB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_campaign_idx ON audit_events (campaign_id, id);
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,
+    email       TEXT NOT NULL UNIQUE,
+    role        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS webhook_receipts (
     request_id  TEXT NOT NULL,
     status      TEXT NOT NULL,
@@ -59,8 +66,7 @@ class PostgresStore:
     async def save_campaign(self, campaign: Campaign) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO campaigns (id, created_at, data) VALUES (%s, %s, %s) "
-                "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+                "INSERT INTO campaigns (id, created_at, data) VALUES (%s, %s, %s) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
                 (campaign.spec.id, campaign.created_at, Jsonb(campaign.model_dump(mode="json"))),
             )
 
@@ -113,9 +119,34 @@ class PostgresStore:
             rows = await (await conn.execute(sql + " ORDER BY id", params)).fetchall()
         return [AuditEvent(campaign_id=r[0], deal_id=r[1], at=r[2], actor=r[3], kind=r[4], detail=r[5]) for r in rows]
 
+    async def save_user(self, user: User) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, email, role, created_at, data) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, role = EXCLUDED.role, data = EXCLUDED.data",
+                (user.id, user.email, user.role, user.created_at, Jsonb(user.model_dump(mode="json"))),
+            )
+
+    async def get_user(self, user_id: str) -> User | None:
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT data FROM users WHERE id = %s", (user_id,))).fetchone()
+        return User.model_validate(row[0]) if row else None
+
+    async def get_user_by_email(self, email: str) -> User | None:
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT data FROM users WHERE email = %s", (email,))).fetchone()
+        return User.model_validate(row[0]) if row else None
+
+    async def list_users(self, role: str | None = None) -> list[User]:
+        async with self.pool.connection() as conn:
+            if role is None:
+                cur = await conn.execute("SELECT data FROM users ORDER BY created_at")
+            else:
+                cur = await conn.execute("SELECT data FROM users WHERE role = %s ORDER BY created_at", (role,))
+            rows = await cur.fetchall()
+        return [User.model_validate(r[0]) for r in rows]
+
     async def claim_webhook(self, request_id: str, status: str) -> bool:
         async with self.pool.connection() as conn:
-            cur = await conn.execute(
-                "INSERT INTO webhook_receipts (request_id, status) VALUES (%s, %s) ON CONFLICT DO NOTHING", (request_id, status)
-            )
+            cur = await conn.execute("INSERT INTO webhook_receipts (request_id, status) VALUES (%s, %s) ON CONFLICT DO NOTHING", (request_id, status))
             return cur.rowcount == 1

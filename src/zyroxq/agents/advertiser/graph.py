@@ -1,10 +1,12 @@
 """Advertiser (Payment) Agent graph.
 
-    discover ──Send×N──▶ negotiate ──▶ prepare_payments ──▶ approval? ──▶ execute_payments ──▶ END
-    (Agent Cards)        (A2A, parallel)   (Cart Mandate +       (interrupt)   (sign Payment Mandate,
-                                            policy gate)                         submit to HSP)
+    discover ──Send×N──▶ negotiate ──▶ prepare_payments ──▶ approval ──▶ execute_payments ──▶ END
+    (Agent Cards)        (A2A, parallel)   (Cart Mandate +       (interrupt:   (verify signatures,
+                                            policy gate)           wallet signs   submit Payment
+                                                                   in browser)    Mandates to HSP)
 
-The LLM only appears inside `negotiate` (proposals, bounded by the policy). Signing is a fixed node.
+The LLM only appears inside `negotiate` (proposals, bounded by the policy). The advertiser's own
+wallet signs; the graph only verifies and submits.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ class AdvertiserState(TypedDict, total=False):
     shortlist: list[str]
     results: Annotated[list[dict[str, Any]], operator.add]
     gated: list[str]
+    signatures: dict[str, str]
 
 
 class NegotiateInput(TypedDict):
@@ -44,9 +47,10 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         campaign = await deals.campaign(state["campaign_id"])
         spec = campaign.spec
         shortlist: list[str] = []
-        for inf_id, reg in ctx.registry.items():
-            p = reg.profile
-            if p.niche != spec.niche or not (spec.min_subscribers <= p.subscribers <= spec.max_subscribers):
+        registry = await ctx.registry.all()
+        for reg in registry:
+            p, inf_id = reg.profile, reg.profile.id
+            if p.niche.lower() != spec.niche.lower() or not (spec.min_subscribers <= p.subscribers <= spec.max_subscribers):
                 continue
             try:
                 card = await ctx.a2a.fetch_card(reg.agent_url)
@@ -55,10 +59,10 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
                 continue
             if any(s.id == NEGOTIATE_SKILL for s in card.skills):
                 shortlist.append(inf_id)
-        await deals.audit(spec.id, None, "advertiser-agent", "discovered", shortlist=shortlist, registry_size=len(ctx.registry))
+        await deals.audit(spec.id, None, "advertiser-agent", "discovered", shortlist=shortlist, registry_size=len(registry))
         campaign.status = "negotiating" if shortlist else "failed"
-        campaign.error = "" if shortlist else "no matching influencer agents"
-        await ctx.store.save_campaign(campaign)
+        campaign.error = "" if shortlist else f"no active {spec.niche} influencer agents match this campaign yet"
+        await deals.save_campaign(campaign)
         return {"shortlist": shortlist}
 
     def fan_out(state: AdvertiserState) -> list[Send] | str:
@@ -68,7 +72,9 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
 
     async def negotiate(inp: NegotiateInput) -> AdvertiserState:
         spec = (await deals.campaign(inp["campaign_id"])).spec
-        reg = ctx.registry[inp["influencer_id"]]
+        reg = await ctx.registry.get(inp["influencer_id"])
+        if reg is None:
+            return {"results": []}
         deal = await deals.save(Deal(id=new_id("DEAL"), campaign_id=spec.id, influencer_id=reg.profile.id))
 
         offer = opening_offer(spec, deal.id)
@@ -123,26 +129,29 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         return "approval" if state["gated"] else END
 
     async def approval(state: AdvertiserState) -> Command:
+        spec = (await deals.campaign(state["campaign_id"])).spec
         gated = [await deals.get(i) for i in state["gated"]]
-        if not deals.approval_needed(gated):
-            return Command(goto="execute_payments")
         for d in gated:
-            await deals.await_approval(d)
+            if d.state != "AWAITING_APPROVAL":  # node re-runs on resume; keep the draft that was signed
+                await deals.await_signature(d, spec.payer)
         await deals.refresh_campaign_status(state["campaign_id"])
         total = sum(d.terms.cap for d in gated if d.terms)
         decision = interrupt({"campaign_id": state["campaign_id"], "deals": state["gated"], "total": str(total),
-                              "threshold": str(ctx.settings.approval_threshold_usd)})  # fmt: skip
-        await deals.audit(state["campaign_id"], None, "human", "approval_decision", approved=bool(decision), total=total)
-        if decision:
-            return Command(goto="execute_payments")
+                              "payer": spec.payer, "signing": "browser" if ctx.gateway.agent_signing else "hosted_checkout"})  # fmt: skip
+        approved = bool(decision.get("approved")) if isinstance(decision, dict) else bool(decision)
+        await deals.audit(state["campaign_id"], None, "human", "approval_decision", approved=approved, total=total, payer=spec.payer)
+        if approved:
+            signatures = decision.get("signatures", {}) if isinstance(decision, dict) else {}
+            return Command(goto="execute_payments", update={"signatures": signatures})
         for d in gated:
             await deals.save(await deals.get(d.id), DealState.REJECTED)
         await deals.refresh_campaign_status(state["campaign_id"])
         return Command(goto=END)
 
     async def execute_payments(state: AdvertiserState) -> AdvertiserState:
+        signatures = state.get("signatures", {})
         for deal_id in state["gated"]:
-            await deals.sign_and_submit(await deals.get(deal_id))
+            await deals.submit_payment(await deals.get(deal_id), signatures.get(deal_id))
         await deals.refresh_campaign_status(state["campaign_id"])
         return {}
 

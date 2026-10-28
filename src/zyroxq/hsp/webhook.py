@@ -5,9 +5,7 @@ import time
 TERMINAL_STATUSES = frozenset({"payment-finalized", "payment-failed"})
 
 
-def verify_webhook_signature(
-    header: str | None, raw_body: bytes, app_secret: str, tolerance_seconds: int = 300, now: int | None = None
-) -> bool:
+def verify_webhook_signature(header: str | None, raw_body: bytes, app_secret: str, tolerance_seconds: int = 300, now: int | None = None) -> bool:
     """`X-Signature: t=<ts>,v1=<hex>` with v1 = HMAC-SHA256(app_secret, f"{t}.{raw_body}"). Pass the raw body."""
     if not header:
         return False

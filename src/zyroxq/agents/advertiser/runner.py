@@ -24,13 +24,13 @@ class CampaignRunner:
 
     async def start(self, spec: CampaignSpec) -> Campaign:
         campaign = Campaign(spec=spec, created_at=self.deals.ctx.clock.now())
-        await self.deals.ctx.store.save_campaign(campaign)
+        await self.deals.save_campaign(campaign)
         await self.deals.audit(spec.id, None, "human", "campaign_created", budget=spec.budget, niche=spec.niche, max_creators=spec.max_creators)
         self._spawn(spec.id, {"campaign_id": spec.id})
         return campaign
 
-    async def decide(self, campaign_id: str, approved: bool) -> None:
-        self._spawn(campaign_id, Command(resume=approved))
+    async def decide(self, campaign_id: str, approved: bool, signatures: dict[str, str] | None = None) -> None:
+        self._spawn(campaign_id, Command(resume={"approved": approved, "signatures": signatures or {}}))
 
     async def pending_approval(self, campaign_id: str) -> dict[str, Any] | None:
         snapshot = await self.graph.aget_state(self._config(campaign_id))
@@ -57,7 +57,7 @@ class CampaignRunner:
             if campaign:
                 campaign.status = "failed"
                 campaign.error = f"{type(e).__name__}: {e}"
-                await self.deals.ctx.store.save_campaign(campaign)
+                await self.deals.save_campaign(campaign)
             await self.deals.audit(campaign_id, None, "advertiser-agent", "campaign_error", error=str(e))
 
     @staticmethod

@@ -7,7 +7,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from zyroxq.agents.advertiser.negotiation import AdvertiserDecision, next_move
 from zyroxq.agents.influencer.graph import InfluencerDecision, build_influencer_graph
 from zyroxq.clock import Clock
-from zyroxq.demo.fixtures import demo_influencer
 from zyroxq.policy import check_terms
 
 
@@ -26,41 +25,41 @@ class FakeLLM:
         return self.answer
 
 
-async def run_influencer(llm, offer):
-    me = demo_influencer("ava-fit")
+async def run_influencer(me, llm, offer):
     graph = build_influencer_graph(me, Clock(), llm, InMemorySaver())
     out = await graph.ainvoke({"offer": offer.model_dump(mode="json")}, {"configurable": {"thread_id": offer.deal_id}})
     return out["reply"]
 
 
-async def test_influencer_llm_cannot_accept_below_floor(offer):
-    me = demo_influencer("ava-fit")
+async def test_influencer_llm_cannot_accept_below_floor(identity, offer):
+    me = identity
     lowball = offer.model_copy(update={"fixed_fee": me.profile.rate_card.fixed_min - 5})
-    reply = await run_influencer(FakeLLM(InfluencerDecision(action="accept", fixed_fee="1", cpm="0.1", note="sure!")), lowball)
+    reply = await run_influencer(me, FakeLLM(InfluencerDecision(action="accept", fixed_fee="1", cpm="0.1", note="sure!")), lowball)
     assert reply["kind"] == "counter"
     assert Decimal(reply["offer"]["fixed_fee"]) >= me.profile.rate_card.fixed_min
 
 
-async def test_influencer_llm_counter_is_raised_to_floor(offer):
-    me = demo_influencer("ava-fit")
+async def test_influencer_llm_counter_is_raised_to_floor(identity, offer):
+    me = identity
     lowball = offer.model_copy(update={"fixed_fee": Decimal("5")})
-    reply = await run_influencer(FakeLLM(InfluencerDecision(action="counter", fixed_fee="3", cpm="0.5", note="")), lowball)
+    reply = await run_influencer(me, FakeLLM(InfluencerDecision(action="counter", fixed_fee="3", cpm="0.5", note="")), lowball)
     assert Decimal(reply["offer"]["fixed_fee"]) == me.profile.rate_card.fixed_min
     assert Decimal(reply["offer"]["cpm"]) == me.profile.rate_card.cpm_min
 
 
-async def test_influencer_accept_produces_valid_signed_terms(campaign, offer):
-    me = demo_influencer("ava-fit")
-    reply = await run_influencer(None, offer)  # 20 ≥ 15 floor, 2.5 ≥ 2 CPM → accept
+async def test_influencer_accept_produces_valid_signed_terms(campaign, identity, offer):
+    me = identity
+    reply = await run_influencer(me, None, offer)  # 20 ≥ 18 floor, 2.5 ≥ 2 CPM → accept
     assert reply["kind"] == "accept"
     from zyroxq.models import DealTerms
 
     terms = DealTerms.model_validate(reply["terms"])
-    assert check_terms(campaign, terms, me.profile, offer).ok
+    assert terms.payee == me.profile.wallet
+    assert check_terms(campaign, terms, me.profile, offer).ok  # signed by the agent key the wallet authorized
 
 
-async def test_influencer_llm_failure_falls_back_to_rules(offer):
-    reply = await run_influencer(FakeLLM(RuntimeError("model down")), offer)
+async def test_influencer_llm_failure_falls_back_to_rules(identity, offer):
+    reply = await run_influencer(identity, FakeLLM(RuntimeError("model down")), offer)
     assert reply["kind"] == "accept" and reply["decided_by"] == "rules"
 
 
