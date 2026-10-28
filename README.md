@@ -60,7 +60,7 @@ ZyroXQ is a decentralized influencer-marketing platform built for the HashKey **
 │  HSP Webhook endpoint ── payment status → deal state              │
 │  Verifier ── YouTube API checks → signed attestation              │
 │  Scheduler ── deadlines, T+48h / T+7d checks, refunds             │
-│  DB (SQLite) ── deals, mandates, proofs, audit log                │
+│  DB (PostgreSQL) ── deals, mandates, proofs, audit log            │
 └──────┬──────────────────────────────┬─────────────────────────────┘
        │ HMAC + ES256K JWT            │ web3
 ┌──────▼──────────┐          ┌────────▼─────────────┐
@@ -82,6 +82,7 @@ ZyroXQ is a decentralized influencer-marketing platform built for the HashKey **
 | **eth-account** | EIP-712 Payment Mandate signature |
 | **web3** | Escrow contract: fund status, release, refund |
 | **FastAPI + uvicorn** | Platform API, HSP webhook receiver, A2A endpoints |
+| **PostgreSQL** (psycopg 3) | Deals, mandates, proofs, audit log, and LangGraph checkpoints |
 
 ---
 
@@ -210,7 +211,7 @@ receive_offer → llm_evaluate → floor_price_rule → {counter | accept | reje
               → sign_terms → notify_human → await_funding → collect_proof → track_payouts
 ```
 
-A LangGraph SQLite checkpointer lets each deal survive restarts and wait days for proof.
+A LangGraph PostgreSQL checkpointer (`langgraph-checkpoint-postgres`) lets each deal survive restarts and wait days for proof.
 
 ## MCP tool servers (what the LLM is allowed to touch)
 
@@ -240,7 +241,7 @@ src/zyroxq/
   verifier/            youtube.py · attest.py
   mcp_servers/         youtube.py · deals.py · hsp.py · escrow.py
   api/                 FastAPI app: deals, webhooks, A2A mounts, dashboard API
-  db.py                SQLite (deals + audit log)
+  db.py                PostgreSQL via psycopg 3 (deals + audit log)
 contracts/CampaignEscrow.sol
 tests/
 ```

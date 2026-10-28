@@ -182,7 +182,10 @@ langgraph==1.2.18
 langgraph-checkpoint==4.3.1
     # via
     #   langgraph
+    #   langgraph-checkpoint-postgres
     #   langgraph-prebuilt
+langgraph-checkpoint-postgres==3.2.0
+    # via zyroxq
 langgraph-prebuilt==1.1.1
     # via langgraph
 langgraph-sdk==0.4.10
@@ -206,6 +209,7 @@ opentelemetry-api==1.45.1
     #   google-api-core
 orjson==3.13.0
     # via
+    #   langgraph-checkpoint-postgres
     #   langgraph-sdk
     #   langsmith
 ormsgpack==1.13.0
@@ -229,6 +233,16 @@ protobuf==7.36.2
     #   google-api-core
     #   googleapis-common-protos
     #   proto-plus
+psycopg==3.3.6
+    # via
+    #   langgraph-checkpoint-postgres
+    #   zyroxq
+psycopg-binary==3.3.6 ; implementation_name != 'pypy'
+    # via psycopg
+psycopg-pool==3.3.3
+    # via
+    #   langgraph-checkpoint-postgres
+    #   psycopg
 py-ecc==8.0.0
     # via eth-keyfile
 pyasn1==0.6.5
@@ -340,6 +354,7 @@ typing-extensions==4.16.0
     #   langsmith
     #   mcp
     #   opentelemetry-api
+    #   psycopg-pool
     #   pydantic
     #   pydantic-core
     #   pydantic-settings
@@ -350,6 +365,8 @@ typing-inspection==0.4.4
     #   mcp
     #   pydantic
     #   pydantic-settings
+tzdata==2026.6 ; sys_platform == 'win32'
+    # via psycopg
 urllib3==2.8.0
     # via requests
 uuid-utils==0.19.0

@@ -20,7 +20,9 @@ Python 3.13 project managed with uv; package lives in `src/zyroxq/`.
 - Agents: LangChain 1.x (`langchain.agents.create_agent`), LangGraph, LangSmith tracing (env `LANGSMITH_*`), `langchain-anthropic` as the LLM provider.
 - Tools: MCP Python SDK (`mcp.server.fastmcp.FastMCP`) + `langchain-mcp-adapters` (`MultiServerMCPClient`).
 - A2A: `a2a-sdk` 1.x — the 0.x `a2a.server.apps` module is gone; mount routes on FastAPI with `a2a.server.routes.fastapi_routes.add_a2a_routes_to_fastapi`, implement `a2a.server.agent_execution.AgentExecutor`.
-- HTTP/API: FastAPI + uvicorn, httpx (tests mock with respx). Crypto: `cryptography` (secp256k1 ES256K), `eth-account` (EIP-712 Payment Mandate), `web3` (escrow contract).
+- HTTP/API: FastAPI + uvicorn, httpx (tests mock with respx).
+- Database: PostgreSQL via psycopg 3 (`psycopg[binary,pool]`), env `DATABASE_URL`; LangGraph state via `langgraph.checkpoint.postgres` (`PostgresSaver` / `AsyncPostgresSaver`, call `.setup()` once).
+- Crypto: `cryptography` (secp256k1 ES256K), `eth-account` (EIP-712 Payment Mandate), `web3` (escrow contract).
 
 ## Commands
 - `uv sync` — install (set `UV_LINK_MODE=copy` to silence the hardlink warning on Windows)
