@@ -142,3 +142,24 @@ async def test_client_raises_on_error_code():
     with pytest.raises(HspApiError) as e:
         await client.get_payment(flow_id="f")
     assert e.value.code == 40001
+
+
+# --- Google OAuth: YouTube channel proof errors -----------------------------------
+
+
+async def test_youtube_api_disabled_names_the_project():
+    from zyroxq.auth.google import CHANNELS_URL, GoogleOAuth, OAuthError
+
+    body = {"error": {"code": 403, "message": "YouTube Data API v3 has not been used in project 368979334126 before or it is disabled.",
+                      "errors": [{"reason": "accessNotConfigured"}]}}  # fmt: skip
+    with respx.mock:
+        respx.get(CHANNELS_URL).respond(403, json=body)
+        with pytest.raises(OAuthError, match=r"not enabled in Google Cloud project 368979334126.*project=368979334126"):
+            await GoogleOAuth("id", "secret", "http://x/cb").my_channel("token")
+
+
+async def test_unticked_youtube_permission_is_explained_without_calling_youtube():
+    from zyroxq.auth.google import GoogleOAuth, OAuthError
+
+    with respx.mock(assert_all_called=False), pytest.raises(OAuthError, match="permission was not granted"):
+        await GoogleOAuth("id", "secret", "http://x/cb").my_channel("token", granted_scope="openid https://www.googleapis.com/auth/userinfo.email")

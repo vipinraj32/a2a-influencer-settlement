@@ -16,7 +16,7 @@ class FakeLLM:
     def __init__(self, answer):
         self.answer = answer
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **kwargs):
         return self
 
     async def ainvoke(self, messages):

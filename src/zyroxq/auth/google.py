@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -20,8 +21,34 @@ BASE_SCOPES = ["openid", "email", "profile"]
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 
 
+NO_YOUTUBE_PERMISSION = (
+    "The YouTube permission was not granted. Sign in again with “Continue as an influencer” and keep "
+    "“View your YouTube account” ticked on Google's consent screen."
+)
+
+
 class OAuthError(Exception):
     pass
+
+
+def _youtube_forbidden(res: httpx.Response) -> str:
+    """Turns YouTube's 403 into the one fix that applies."""
+    try:
+        error = res.json().get("error", {})
+    except ValueError:
+        error = {}
+    reasons = {e.get("reason") for e in error.get("errors", [])} | {d.get("reason") for d in error.get("details", []) if isinstance(d, dict)}
+    message = str(error.get("message", ""))
+    if reasons & {"accessNotConfigured", "SERVICE_DISABLED"}:
+        project = re.search(r"project[= ](\d+)", message)
+        where = f" in Google Cloud project {project.group(1)} (the project of your OAuth client)" if project else " in your OAuth client's Google Cloud project"
+        link = f" Enable it at https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project={project.group(1)}" if project else ""
+        return f"YouTube Data API v3 is not enabled{where}.{link} then wait a few minutes and sign in again."
+    if reasons & {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}:
+        return NO_YOUTUBE_PERMISSION
+    if reasons & {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"}:
+        return "YouTube API quota is exhausted for today; try again later."
+    return f"YouTube refused access: {message or res.text[:200]}"
 
 
 class GoogleOAuth:
@@ -73,10 +100,13 @@ class GoogleOAuth:
             raise OAuthError("Google account email is not verified")
         return info
 
-    async def my_channel(self, access_token: str) -> ChannelInfo:
+    async def my_channel(self, access_token: str, granted_scope: str | None = None) -> ChannelInfo:
+        """`granted_scope` is the token response's `scope`: users can untick single permissions on Google's consent screen."""
+        if granted_scope is not None and YOUTUBE_SCOPE not in granted_scope.split():
+            raise OAuthError(NO_YOUTUBE_PERMISSION)
         res = await self._http.get(CHANNELS_URL, params={"part": "snippet,statistics", "mine": "true"}, headers={"Authorization": f"Bearer {access_token}"})
         if res.status_code == 403:
-            raise OAuthError("YouTube access was not granted (enable YouTube Data API v3 and allow the YouTube permission)")
+            raise OAuthError(_youtube_forbidden(res))
         if res.status_code != 200:
             raise OAuthError(f"YouTube channels.list failed: {res.text[:200]}")
         items = res.json().get("items", [])

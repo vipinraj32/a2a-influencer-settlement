@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Literal
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, Field
 
 from ...models import CampaignSpec, InfluencerProfile, Offer
 from ...policy import MAX_ROUNDS, check_offer
+
+log = logging.getLogger(__name__)
 
 CENT = Decimal("0.01")
 
@@ -63,7 +66,7 @@ async def next_move(spec: CampaignSpec, influencer: InfluencerProfile, last: Off
     if llm is None:
         return fallback
     try:
-        d: AdvertiserDecision = await llm.with_structured_output(AdvertiserDecision).ainvoke([
+        d: AdvertiserDecision = await llm.with_structured_output(AdvertiserDecision, method="json_schema").ainvoke([
             SystemMessage(
                 f"You are the advertiser's negotiation agent for {spec.advertiser} ({spec.brand_handle}). "
                 f"Limits: fixed fee ≤ ${spec.max_fixed}, CPM ≤ ${spec.max_cpm}, cap ${spec.cap_per_creator}, round {last.round + 1} of {MAX_ROUNDS}. "
@@ -76,7 +79,8 @@ async def next_move(spec: CampaignSpec, influencer: InfluencerProfile, last: Off
                 f"note {counter.note!r}"
             ),
         ])  # fmt: skip
-    except Exception:  # noqa: BLE001 - LLM failure → deterministic move
+    except Exception as e:  # noqa: BLE001 - LLM failure → deterministic move
+        log.warning("advertiser LLM failed, using rules: %s: %s", type(e).__name__, e)
         return fallback
 
     if d.action == "walk_away":

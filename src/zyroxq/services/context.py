@@ -50,7 +50,7 @@ def chat_model(settings: Settings) -> BaseChatModel | None:
         return None
     from langchain_anthropic import ChatAnthropic
 
-    return ChatAnthropic(model=settings.llm_model, api_key=settings.anthropic_api_key, temperature=0.3, max_tokens=1024)
+    return ChatAnthropic(model=settings.llm_model, api_key=settings.anthropic_api_key, max_tokens=1024)
 
 
 async def build_context(

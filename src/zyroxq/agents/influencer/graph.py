@@ -8,6 +8,7 @@ Each incoming A2A offer is one run; per-deal history persists in the checkpointe
 
 from __future__ import annotations
 
+import logging
 import operator
 from datetime import timedelta
 from decimal import Decimal
@@ -24,6 +25,8 @@ from ...models import DealTerms, NegotiationReply, Offer
 from ...policy.engine import MAX_ROUNDS
 from ...wallet.signer import sign_terms
 from .identity import InfluencerIdentity
+
+log = logging.getLogger(__name__)
 
 CENT = Decimal("0.01")
 
@@ -68,7 +71,7 @@ def build_influencer_graph(me: InfluencerIdentity, clock: Clock, llm: BaseChatMo
         proposal = rule_proposal(me, offer)
         if llm is not None:
             try:
-                decision: InfluencerDecision = await llm.with_structured_output(InfluencerDecision).ainvoke([
+                decision: InfluencerDecision = await llm.with_structured_output(InfluencerDecision, method="json_schema").ainvoke([
                     SystemMessage(
                         f"You negotiate sponsorships for the YouTube creator {me.profile.name} "
                         f"({me.profile.subscribers:,} subscribers, niche: {me.profile.niche}). Style: {me.persona or 'professional and fair'}. "
@@ -80,8 +83,8 @@ def build_influencer_graph(me: InfluencerIdentity, clock: Clock, llm: BaseChatMo
                 ])  # fmt: skip
                 proposal = {"action": decision.action, "fixed_fee": Decimal(decision.fixed_fee), "cpm": Decimal(decision.cpm),
                             "note": decision.note, "source": "llm"}  # fmt: skip
-            except Exception:  # noqa: BLE001 - any LLM or parsing failure falls back to the rules
-                pass
+            except Exception as e:  # noqa: BLE001 - any LLM or parsing failure falls back to the rules
+                log.warning("influencer LLM failed, using rules: %s: %s", type(e).__name__, e)
         return {"proposal": proposal}
 
     def enforce_floor(state: InfluencerState) -> InfluencerState:

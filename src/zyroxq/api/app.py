@@ -299,7 +299,7 @@ def create_app(
             info = await oauth.userinfo(tokens["access_token"])
             user = await state.ctx.store.get_user_by_email(info["email"])
             role = user.role if user else pending["role"]
-            channel = await oauth.my_channel(tokens["access_token"]) if role == "influencer" and pending["role"] == "influencer" else None
+            channel = await oauth.my_channel(tokens["access_token"], tokens.get("scope")) if role == "influencer" and pending["role"] == "influencer" else None
         except OAuthError as e:
             return to_frontend("/login", str(e))
         if user is None:
@@ -430,7 +430,7 @@ def create_app(
         """LLM drafts the campaign form from free text. The draft is validated, and the human submits it."""
         if state.ctx.llm is None:
             raise HTTPException(400, "Set ANTHROPIC_API_KEY to parse briefs; fill the form manually otherwise")
-        draft = await state.ctx.llm.with_structured_output(CampaignCreate).ainvoke(
+        draft = await state.ctx.llm.with_structured_output(CampaignCreate, method="json_schema").ainvoke(
             f"Turn this advertiser brief into campaign parameters. Use USD with 2 decimals. Brief:\n{body.brief}"
         )
         return CampaignCreate.model_validate(draft.model_dump()).model_dump(mode="json")
@@ -568,7 +568,11 @@ def create_app(
     async def ask(body: Question, user: AdvertiserUser) -> dict[str, str]:
         if state.assistant is None:
             raise HTTPException(400, "Set ANTHROPIC_API_KEY to use the assistant")
-        return {"answer": await state.assistant.ask(body.question, issue_user_token(settings.session_secret, user.id))}
+        try:
+            return {"answer": await state.assistant.ask(body.question, issue_user_token(settings.session_secret, user.id))}
+        except Exception as e:  # LLM/provider errors become a readable message, not a 500
+            log.exception("assistant failed")
+            raise HTTPException(502, f"The assistant could not answer: {type(e).__name__}: {str(e)[:300]}") from e
 
     # ---- dev: time travel (simulated escrow only) ----------------------------------------
 
