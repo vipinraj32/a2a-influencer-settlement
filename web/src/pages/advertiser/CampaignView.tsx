@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../../api";
+import { ComplianceCard, ReviewForm } from "../../components/Compliance";
 import { DealDetail } from "../../components/DealDetail";
+import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
-import { ActionButton, Avatar, CampaignBadge, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
-import { usd } from "../../format";
+import { ActionButton, Address, Avatar, CampaignBadge, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
+import { MODEL_LABEL, short, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { useMe, useSession } from "../../session";
-import type { CampaignDetail, Deal, DirectoryEntry } from "../../types";
+import type { CampaignDetail, Deal, DirectoryEntry, WalletBalance } from "../../types";
 import * as wallet from "../../wallet";
 
 function spend(deals: Deal[]) {
@@ -20,22 +22,62 @@ function spend(deals: Deal[]) {
 function SigningPanel({ campaign, names, onDone }: { campaign: CampaignDetail; names: Map<string, string>; onDone: () => void }) {
   const { status } = useSession();
   const pending = campaign.pending_approval!;
+  const requests = campaign.signing_requests;
   const [progress, setProgress] = useState<string | null>(null);
+  const [balance, setBalance] = useState<WalletBalance | null>(null);
+  const [account, setAccount] = useState<string | null>(null);
+  const [chainId, setChainId] = useState<number | null>(null);
+  const explorer = status?.escrow.simulated ? undefined : status?.chain.explorer_url;
+  const simulated = status?.settlement_simulated ?? true;
+
+  async function refresh(): Promise<WalletBalance | null> {
+    setAccount(await wallet.currentAccount());
+    setChainId(await wallet.currentChainId());
+    try {
+      const b = await api.walletBalance();
+      setBalance(b);
+      return b;
+    } catch {
+      setBalance(null);
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    return wallet.onAccountsChanged(() => void refresh());
+  }, [campaign.spec.id]);
+
+  const total = requests.reduce((s, r) => s + Number(r.amount ?? 0), 0);
+  const held = balance?.balance != null ? Number(balance.balance) : null;
+  const shortfall = held !== null && held < total;
+  // Deals settle independently, in this order: how many the current balance could cover
+  let covered = 0;
+  for (let i = 0, left = held ?? 0; i < requests.length && left >= Number(requests[i].amount ?? 0); i++) {
+    left -= Number(requests[i].amount ?? 0);
+    covered++;
+  }
+  const expired = requests.some((r) => r.expired);
+  const blocked = requests.filter((r) => r.problems.length > 0 && !r.expired);
+  const wrongAccount = account !== null && !wallet.sameAddress(account, pending.payer);
+  const wrongChain = chainId !== null && status !== null && chainId !== status.chain.id;
 
   async function signAll() {
-    const account = await wallet.connect();
-    if (!wallet.sameAddress(account, pending.payer)) {
-      throw new Error(`Switch MetaMask to the campaign's payer wallet ${pending.payer} (currently ${account}).`);
+    const connected = await wallet.connect();
+    if (!wallet.sameAddress(connected, pending.payer)) {
+      throw new Error(`Switch MetaMask to the campaign's payer wallet ${pending.payer} (currently ${connected}).`);
     }
     if (status) await wallet.ensureChain(status.chain);
+    setProgress("Checking your balance…");
+    await refresh(); // advisory only: it can still change before settlement
     const signatures: Record<string, string> = {};
-    for (const [i, r] of campaign.signing_requests.entries()) {
-      if (!r.typed_data) continue;
-      setProgress(`Signing ${i + 1} of ${campaign.signing_requests.length}: ${names.get(r.influencer_id) ?? r.influencer_id}…`);
-      signatures[r.deal_id] = await wallet.signTypedData(account, r.typed_data);
-    }
-    setProgress("Submitting signed mandates to HSP…");
     try {
+      for (const [i, r] of requests.entries()) {
+        if (!r.typed_data) continue;
+        setProgress(`Signing ${i + 1} of ${requests.length}: ${names.get(r.influencer_id) ?? r.influencer_id}…`);
+        signatures[r.deal_id] = await wallet.signTypedData(connected, r.typed_data);
+      }
+      setProgress("Submitting the signed authorizations…");
       await api.decide(campaign.spec.id, true, signatures);
     } finally {
       setProgress(null);
@@ -53,32 +95,122 @@ function SigningPanel({ campaign, names, onDone }: { campaign: CampaignDetail; n
     onDone();
   }
 
+  async function renew() {
+    await api.redraft(campaign.spec.id);
+    onDone();
+  }
+
   return (
     <div className="signing card tone-warn">
-      <h2>Your signature is needed: {usd(pending.total)} into escrow</h2>
+      <h2>
+        Authorize {requests.length} payment{requests.length > 1 ? "s" : ""}: {usd(total)} into escrow
+      </h2>
+      {simulated && (
+        <Notice tone="warn">
+          <strong>Simulated settlement.</strong> HSP and the escrow run in-process: no real USDC moves, and payouts and refunds are ledger entries
+          only. Your wallet still signs real EIP-712 data.
+        </Notice>
+      )}
       <p>
-        Your agent agreed terms with {campaign.signing_requests.length} creator{campaign.signing_requests.length > 1 ? "s" : ""}, and every Cart Mandate passed the policy
-        checks. {pending.signing === "browser"
-          ? "Each payment is an EIP-3009 transfer to the escrow contract, so your wallet signs one EIP-712 Payment Mandate per creator."
-          : "Approve, then pay each deal in HSP's hosted checkout."}
+        {pending.signing === "browser" ? (
+          <>
+            Your wallet signs one EIP-3009 <code>TransferWithAuthorization</code> per creator: permission for HSP to move exactly that amount of{" "}
+            {status?.token.coin ?? "USDC"} from your wallet to the escrow contract before the expiry. <strong>Signing does not move money</strong>{" "}
+            and does not guarantee funding. A deal is funded only after the settlement transaction is verified
+            {simulated ? " (in the simulated ledger)" : ` on chain (${status?.settlement_min_confirmations ?? 1}+ confirmations)`}.
+          </>
+        ) : (
+          "Approve, then pay each deal in HSP's hosted checkout. A deal is funded only after its settlement transaction is verified on chain."
+        )}
       </p>
+
+      <div className="stats compact-stats">
+        <Stat label="Campaign budget" value={usd(campaign.funding.budget)} hint="A spending limit, not money held" />
+        <Stat label="Reserved (incl. these)" value={usd(campaign.funding.reserved)} hint="Caps of deals being paid or already paid" />
+        <Stat label="Funded" value={usd(campaign.funding.funded)} hint="Verified settlements locked in escrow" />
+        <Stat label="Remaining budget" value={usd(campaign.funding.remaining)} />
+      </div>
+
+      <dl className="kv">
+        <dt>Payer wallet</dt>
+        <dd>
+          <Address value={pending.payer} explorer={explorer} />
+          {wrongAccount && <span className="chip warn">MetaMask is on {short(account)}</span>}
+        </dd>
+        <dt>Network</dt>
+        <dd>
+          {status?.chain.name} ({status?.chain.id})
+          {wrongChain && <span className="chip warn">wallet is on chain {chainId}: it will be asked to switch</span>}
+        </dd>
+        <dt>{status?.token.coin ?? "USDC"} balance</dt>
+        <dd>
+          {balance === null ? (
+            <span className="muted">unknown</span>
+          ) : balance.balance === null ? (
+            <span className="muted">{balance.error}</span>
+          ) : (
+            <>
+              {usd(balance.balance)} <span className="muted small">checked {new Date(balance.checked_at).toLocaleTimeString()}</span>
+            </>
+          )}{" "}
+          <button type="button" className="link" onClick={() => void refresh()}>
+            refresh
+          </button>
+        </dd>
+      </dl>
+      {shortfall &&
+        (simulated ? (
+          <Notice tone="info">
+            Your wallet holds {usd(held)} of the {usd(total)} these deals would need on a real network. Simulated mode does not use it.
+          </Notice>
+        ) : (
+          <Notice tone="bad">
+            <strong>Insufficient balance:</strong> your wallet holds {usd(held)} {status?.token.coin} but these deals need {usd(total)}. Each deal
+            settles on its own: as things stand about {covered} of {requests.length} can be funded, and the others will fail with nothing locked.
+            Balances can change before settlement, so this is a warning, not a guarantee.
+          </Notice>
+        ))}
+
       <table className="table compact">
+        <thead>
+          <tr>
+            <th>Creator</th>
+            <th>Amount</th>
+            <th>Recipient (escrow)</th>
+            <th>Expires</th>
+          </tr>
+        </thead>
         <tbody>
-          {campaign.signing_requests.map((r) => (
+          {requests.map((r) => (
             <tr key={r.deal_id}>
               <td>{names.get(r.influencer_id) ?? r.influencer_id}</td>
-              <td>{usd(r.amount)}</td>
-              <td className="muted small">
-                to escrow {r.typed_data ? String(r.typed_data.message.to).slice(0, 10) + "…" : ""} · valid until{" "}
-                {r.typed_data ? new Date(Number(r.typed_data.message.validBefore) * 1000).toLocaleTimeString() : "checkout"}
+              <td>
+                {usd(r.amount)} {status?.token.coin}
+              </td>
+              <td>
+                <Address value={r.typed_data ? String(r.typed_data.message.to) : status?.escrow.address} explorer={explorer} />
+              </td>
+              <td className={r.expired ? "error" : "muted"}>
+                {r.valid_before ? new Date(r.valid_before * 1000).toLocaleTimeString() : "checkout"}
+                {r.expired && " · expired"}
+                {r.problems
+                  .filter((p) => !r.expired || !p.includes("expire"))
+                  .map((p) => (
+                    <div key={p} className="error small">
+                      {p}
+                    </div>
+                  ))}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+
       <div className="row">
-        {pending.signing === "browser" ? (
-          <ActionButton onClick={signAll} disabled={!wallet.hasWallet()}>
+        {expired ? (
+          <ActionButton onClick={renew}>Renew expired authorizations</ActionButton>
+        ) : pending.signing === "browser" ? (
+          <ActionButton onClick={signAll} disabled={!wallet.hasWallet() || blocked.length > 0}>
             Review &amp; sign in wallet
           </ActionButton>
         ) : (
@@ -89,7 +221,10 @@ function SigningPanel({ campaign, names, onDone }: { campaign: CampaignDetail; n
         </ActionButton>
         {progress && <span className="muted">{progress}</span>}
       </div>
-      <p className="muted small">Payer wallet {pending.payer}. Nothing moves until you sign. Mandates expire one hour after they are drafted.</p>
+      <p className="muted small">
+        Token {status?.token.coin} at <span className="mono">{short(status?.token.address)}</span> on chain {status?.chain.id}. Rejecting in your wallet
+        submits nothing. Never share your seed phrase or private key: ZyroXQ only ever asks your wallet for signatures.
+      </p>
     </div>
   );
 }
@@ -177,7 +312,9 @@ export function CampaignView() {
             {c.spec.advertiser} <span className="muted">{c.spec.brand_handle}</span>
           </h1>
           <p className="muted small">
-            {c.spec.niche} · up to {c.spec.max_creators} creators · max {usd(c.spec.max_fixed)} fixed + {usd(c.spec.max_cpm)} CPM · cap {usd(c.spec.cap_per_creator)} each ·{" "}
+            {c.spec.niche} · {MODEL_LABEL[c.spec.compensation_model] ?? c.spec.compensation_model} · up to {c.spec.max_creators} creators · max {usd(c.spec.max_fixed)}{" "}
+            fixed + {usd(c.spec.max_cpm)} CPM · cap {usd(c.spec.cap_per_creator)} each · {c.spec.max_rounds} rounds · agent policy{" "}
+            {c.spec.agent_policy_version ? `v${c.spec.agent_policy_version}` : "defaults"} · {c.spec.disclosure_policies.join(", ")} ·{" "}
             <span className="mono">{c.spec.id}</span>
           </p>
         </div>
@@ -248,6 +385,7 @@ export function CampaignView() {
                     Pay in HSP checkout
                   </a>
                 )}
+                {deal.state === "VERIFIED" && c.spec.review_required && <ReviewForm dealId={deal.id} onDone={reloadAll} />}
                 {deal.state === "VERIFIED" && <DisputeForm dealId={deal.id} />}
               </>
             }
@@ -259,6 +397,17 @@ export function CampaignView() {
           </Card>
         )}
       </div>
+
+      <ComplianceCard campaignId={c.spec.id} names={names} />
+
+      <Card title="Content requirements">
+        <Requirements
+          deliverable={c.spec.deliverable}
+          min={c.spec.min_duration_seconds}
+          max={c.spec.max_duration_seconds}
+          text={c.spec.requirements}
+        />
+      </Card>
 
       <Assistant />
     </div>

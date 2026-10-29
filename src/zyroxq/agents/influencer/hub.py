@@ -16,18 +16,29 @@ from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
 from ...clock import Clock
+from .graph import DisclosureResolver, builtin_resolver
 from .identity import InfluencerIdentity
-from .server import InfluencerExecutor, build_influencer_app
+from .server import DecisionSink, InfluencerExecutor, build_influencer_app
 
 IdentityLookup = Callable[[str], Awaitable[InfluencerIdentity | None]]
 
 
 class InfluencerHub:
-    def __init__(self, lookup: IdentityLookup, agent_url: Callable[[str], str], clock: Clock, llm: BaseChatModel | None) -> None:
+    def __init__(
+        self,
+        lookup: IdentityLookup,
+        agent_url: Callable[[str], str],
+        clock: Clock,
+        llm: BaseChatModel | None,
+        record: DecisionSink | None = None,
+        resolve_disclosure: DisclosureResolver = builtin_resolver,
+    ) -> None:
         self.lookup = lookup
         self.agent_url = agent_url
         self.clock = clock
         self.llm = llm
+        self.record = record
+        self.resolve_disclosure = resolve_disclosure
         self._apps: dict[str, tuple[str, FastAPI, InfluencerExecutor]] = {}
         self._inboxes: dict[str, list[dict[str, Any]]] = {}
 
@@ -39,10 +50,12 @@ class InfluencerHub:
         if me is None:
             self._apps.pop(influencer_id, None)
             return None
-        fingerprint = json.dumps([me.profile.model_dump(mode="json"), me.persona], sort_keys=True)
+        policy = me.policy.model_dump(mode="json") if me.policy else None
+        fingerprint = json.dumps([me.profile.model_dump(mode="json"), me.persona, policy], sort_keys=True)
         cached = self._apps.get(influencer_id)
         if cached is None or cached[0] != fingerprint:
-            app, executor = build_influencer_app(me, self.agent_url(influencer_id), self.clock, self.llm, self.inbox(influencer_id))
+            app, executor = build_influencer_app(me, self.agent_url(influencer_id), self.clock, self.llm, self.inbox(influencer_id),
+                                                 self.record, self.resolve_disclosure)  # fmt: skip
             cached = self._apps[influencer_id] = (fingerprint, app, executor)
         return cached[1], cached[2]
 

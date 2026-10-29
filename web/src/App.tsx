@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import { Spinner } from "./components/ui";
 import { Account } from "./pages/Account";
 import { AdvertiserHome } from "./pages/advertiser/AdvertiserHome";
+import { AgentProfile } from "./pages/advertiser/AgentProfile";
 import { CampaignView } from "./pages/advertiser/CampaignView";
 import { Creators } from "./pages/advertiser/Creators";
 import { NewCampaign } from "./pages/advertiser/NewCampaign";
@@ -57,6 +58,7 @@ const router = createBrowserRouter([
       { path: "/advertiser", element: <AdvertiserHome /> },
       { path: "/advertiser/new", element: <NewCampaign /> },
       { path: "/advertiser/creators", element: <Creators /> },
+      { path: "/advertiser/agent", element: <AgentProfile /> },
       { path: "/advertiser/campaigns/:id", element: <CampaignView /> },
     ],
   },

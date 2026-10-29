@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { api } from "../api";
-import { humanize, num, usd, when } from "../format";
+import { MODEL_LABEL, humanize, num, usd, videoLength, when } from "../format";
 import { useLiveEvents, useResource } from "../live";
 import { useSession } from "../session";
 import type { Deal } from "../types";
+import { NegotiationRoom } from "./NegotiationRoom";
 import { Timeline } from "./Timeline";
 import { Address, Card, Empty, StateBadge } from "./ui";
 
@@ -31,36 +32,17 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
         </div>
       )}
 
-      <h3>Negotiation over A2A</h3>
-      {deal.rounds.length === 0 ? (
-        <Empty>No rounds yet.</Empty>
-      ) : (
-        <ol className="rounds">
-          {deal.rounds.map((r) => (
-            <li key={r.offer.round}>
-              <div>
-                <strong>Round {r.offer.round}</strong> · advertiser offered {usd(r.offer.fixed_fee)} fixed + {usd(r.offer.cpm)} CPM (cap {usd(r.offer.cap)})
-              </div>
-              <div className={`reply reply-${r.reply.kind}`}>
-                Influencer agent <strong>{r.reply.kind}</strong>
-                {r.reply.counter && r.reply.kind === "counter" && (
-                  <>
-                    {" "}
-                    → {usd(r.reply.counter.fixed_fee)} + {usd(r.reply.counter.cpm)} CPM
-                  </>
-                )}
-                {r.reply.reason && <span className="muted"> “{r.reply.reason}”</span>}
-                {r.reply.decided_by && <span className="chip">{r.reply.decided_by}</span>}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
+      <h3>Negotiation room</h3>
+      <NegotiationRoom deal={deal} />
 
       {t && (
         <>
           <h3>Signed terms</h3>
           <dl className="kv">
+            <dt>Model</dt>
+            <dd>
+              {MODEL_LABEL[t.compensation_model] ?? t.compensation_model} <span className="muted small">({t.pricing_version})</span>
+            </dd>
             <dt>Fixed fee</dt>
             <dd>{usd(t.fixed_fee)}</dd>
             <dt>Per 1,000 views</dt>
@@ -73,6 +55,21 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
             <dd>{t.min_live_hours} h</dd>
             <dt>Required tags</dt>
             <dd>{t.required_tags.join(" ")}</dd>
+            <dt>Disclosure rules</dt>
+            <dd>{t.disclosure_policies.length ? t.disclosure_policies.join(", ") : "—"}</dd>
+            <dt>Rights</dt>
+            <dd>
+              {humanize(t.scope.usage_rights)}
+              {t.scope.license_days ? `, ${t.scope.license_days}-day license` : ""}
+              {t.scope.paid_amplification ? ", paid amplification" : ""}
+              {t.scope.exclusivity_days ? `, ${t.scope.exclusivity_days}-day exclusivity` : ""}
+            </dd>
+            <dt>Video length</dt>
+            <dd>{videoLength(t.min_duration_seconds, t.max_duration_seconds)}</dd>
+            <dt>Requirements hash</dt>
+            <dd className="mono" title={t.requirements_hash}>
+              {t.requirements_hash ? `${t.requirements_hash.slice(0, 10)}…${t.requirements_hash.slice(-6)}` : "none"}
+            </dd>
             <dt>Payee</dt>
             <dd>
               <Address value={t.payee} explorer={explorer} />
@@ -98,7 +95,30 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
             {deal.funding_tx && (
               <>
                 <dt>Funding tx</dt>
-                <dd className="mono">{deal.funding_tx.slice(0, 18)}…</dd>
+                <dd className="mono">
+                  {explorer && !deal.funding_simulated ? (
+                    <a href={`${explorer}/tx/${deal.funding_tx}`} target="_blank" rel="noreferrer">
+                      {deal.funding_tx.slice(0, 18)}…
+                    </a>
+                  ) : (
+                    `${deal.funding_tx.slice(0, 18)}…`
+                  )}
+                  {deal.funding_simulated && <span className="chip warn">simulated, no USDC moved</span>}
+                </dd>
+              </>
+            )}
+            {deal.payment_attempts.length > 0 && (
+              <>
+                <dt>Attempts</dt>
+                <dd>
+                  {deal.payment_attempts.map((a) => (
+                    <div key={a.idempotency_key} className="small">
+                      {humanize(a.status)} via {a.gateway}
+                      {a.simulated ? " (simulated)" : ""} · {when(a.updated_at)}
+                      {a.error && <span className="muted"> — {a.error}</span>}
+                    </div>
+                  ))}
+                </dd>
               </>
             )}
           </dl>
@@ -118,6 +138,9 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
               </li>
             ))}
           </ul>
+          {Object.keys(deal.proof.attestations ?? {}).length > 0 && (
+            <p className="small muted">Creator attested: {Object.keys(deal.proof.attestations).map(humanize).join(", ")} (statements, not machine-verified)</p>
+          )}
           <p className="muted small">
             Views at check: {num(deal.proof.views)} · fixed fee due {when(deal.fixed_release_due)} · performance due {when(deal.performance_due)}
           </p>
@@ -131,7 +154,10 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
             <tbody>
               {deal.payouts.map((p, i) => (
                 <tr key={i}>
-                  <td>{humanize(p.kind)}</td>
+                  <td>
+                    {humanize(p.kind)}
+                    {p.simulated && <span className="chip warn">simulated</span>}
+                  </td>
                   <td>{usd(p.amount)}</td>
                   <td>
                     <Address value={p.to} explorer={explorer} />

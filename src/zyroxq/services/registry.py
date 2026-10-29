@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..agent_policy.models import InfluencerPolicy
 from ..agents.influencer.identity import InfluencerIdentity
 from ..auth.crypto import decrypt_agent_key
 from ..models import InfluencerProfile, User
@@ -16,6 +17,9 @@ from ..store import Store
 class Registration:
     profile: InfluencerProfile
     agent_url: str
+
+
+POLICY_KIND = "agent_policy"
 
 
 class InfluencerRegistry:
@@ -32,16 +36,25 @@ class InfluencerRegistry:
         profile = user.influencer_profile() if user and user.agent_active else None
         return profile if profile and delegation_valid(profile) else None
 
+    # The directory is what the advertiser side reads: the creator's floors (rate card) are stripped
     async def all(self) -> list[Registration]:
-        return [Registration(p, self.agent_url(p.id)) for u in await self.store.list_users("influencer") if (p := self._listed(u))]
+        users = await self.store.list_users("influencer")
+        return [Registration(public_profile(p), self.agent_url(p.id)) for u in users if (p := self._listed(u))]
 
     async def get(self, influencer_id: str) -> Registration | None:
         profile = self._listed(await self.store.get_user(influencer_id))
-        return Registration(profile, self.agent_url(profile.id)) if profile else None
+        return Registration(public_profile(profile), self.agent_url(profile.id)) if profile else None
 
     async def identity(self, influencer_id: str) -> InfluencerIdentity | None:
         user = await self.store.get_user(influencer_id)
         profile = self._listed(user)
         if profile is None or user is None:
             return None
-        return InfluencerIdentity(profile, decrypt_agent_key(self.secret, user.agent_key_encrypted), user.persona)
+        doc = await self.store.get_version(POLICY_KIND, user.id)
+        policy = InfluencerPolicy.model_validate(doc) if doc and doc.get("role") == "influencer" else None
+        persona = policy.persona if policy else user.persona
+        return InfluencerIdentity(profile, decrypt_agent_key(self.secret, user.agent_key_encrypted), persona, policy)
+
+
+def public_profile(profile: InfluencerProfile) -> InfluencerProfile:
+    return profile.model_copy(update={"rate_card": None})

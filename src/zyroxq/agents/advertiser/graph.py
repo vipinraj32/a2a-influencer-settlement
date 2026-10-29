@@ -19,6 +19,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send, interrupt
 
+from ...agent_policy import screen_creator
 from ...models import Deal, DealState, DealTerms, NegotiationReply, Offer, new_id
 from ...services.deals import DealService
 from ..influencer.server import NEGOTIATE_SKILL
@@ -71,30 +72,49 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         return [Send("negotiate", {"campaign_id": state["campaign_id"], "influencer_id": i}) for i in state["shortlist"]]
 
     async def negotiate(inp: NegotiateInput) -> AdvertiserState:
+        """Bounded: at most `spec.max_rounds` offers; failure (decline, no movement, escalation) is a valid outcome."""
         spec = (await deals.campaign(inp["campaign_id"])).spec
         reg = await ctx.registry.get(inp["influencer_id"])
         if reg is None:
             return {"results": []}
+        policy = await deals.advertiser_policy(spec)
         deal = await deals.save(Deal(id=new_id("DEAL"), campaign_id=spec.id, influencer_id=reg.profile.id))
+        failed = [c for c in screen_creator(spec, policy, reg.profile) if not c.passed]
+        if failed:
+            await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_move", action="screened_out",
+                              failed=[f"{c.name}: {c.detail}" for c in failed])  # fmt: skip
+            await deals.end_negotiation(deal, DealState.REJECTED, "creator does not meet the advertiser's evidence requirements")
+            return {"results": [{"deal_id": deal.id, "outcome": "screened_out"}]}
 
-        offer = opening_offer(spec, deal.id)
+        offer = opening_offer(spec, deal.id, policy)
         actor = f"influencer-agent:{reg.profile.id}"
+        counters: list[Offer] = []
         while True:
-            raw = await ctx.a2a.send(reg.agent_url, {"type": "offer", "advertiser": spec.advertiser, "offer": offer.model_dump(mode="json")},
-                                     context_id=deal.id)  # fmt: skip
+            message = {"type": "offer", "advertiser": spec.advertiser, "requirements": spec.requirements, "offer": offer.model_dump(mode="json")}
+            raw = await ctx.a2a.send(reg.agent_url, message, context_id=deal.id)
             reply = NegotiationReply.model_validate(raw)
             await deals.record_round(deal, offer, {"kind": reply.kind, "reason": reply.reason, "decided_by": raw.get("decided_by"),
                                                    "counter": reply.offer.model_dump(mode="json") if reply.offer else None}, actor)  # fmt: skip
             if reply.kind == "accept" and reply.terms is not None:
                 return {"results": [await _agree(deal.id, reply.terms, offer)]}
+            if reply.kind in ("clarify", "escalate"):
+                await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"creator's agent: {reply.reason}")
+                return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
             if reply.kind == "reject" or reply.offer is None:
-                await deals.save(deal, DealState.REJECTED)
+                await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, f"creator declined: {reply.reason}")
                 return {"results": [{"deal_id": deal.id, "outcome": "rejected"}]}
-            move = await next_move(spec, reg.profile, offer, reply.offer, ctx.llm)
+            move = await next_move(spec, reg.profile, offer, reply.offer, ctx.llm, policy, counters, ctx.clock.now())
+            counters.append(reply.offer)
+            if move.record is not None:
+                await deals.record_decision(move.record)
             await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_move", action=move.action, reason=move.reason,
                               decided_by=move.decided_by, policy_override=move.policy_override)  # fmt: skip
+            outcome = move.record.public_explanation if move.record else move.reason
+            if move.action == "escalate":
+                await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"advertiser review needed: {outcome}")
+                return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
             if move.action == "walk_away" or move.offer is None:
-                await deals.save(deal, DealState.REJECTED)
+                await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, outcome)
                 return {"results": [{"deal_id": deal.id, "outcome": "walked_away"}]}
             offer = move.offer
 
@@ -102,6 +122,7 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         deal = await deals.get(deal_id)
         deal.terms = terms
         deal.agreed_at = ctx.clock.now()
+        deal.negotiation_outcome = f"agreed in round {offer.round} of {offer.max_rounds}"
         await deals.save(deal, DealState.AGREED)
         await deals.audit(deal.campaign_id, deal.id, "advertiser-agent", "terms_agreed", fixed=terms.fixed_fee, cpm=terms.cpm,
                           cap=terms.cap, terms_hash=terms.terms_hash(), signature=terms.influencer_signature[:18] + "…")  # fmt: skip

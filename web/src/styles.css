@@ -489,6 +489,7 @@ label.check {
   font-weight: 450;
 }
 input,
+select,
 textarea {
   font: inherit;
   color: var(--text);
@@ -498,6 +499,7 @@ textarea {
   padding: 0.5rem 0.65rem;
 }
 input:focus,
+select:focus,
 textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
@@ -884,5 +886,124 @@ textarea {
   .who .role-tag,
   .who .mono {
     display: none;
+  }
+}
+
+/* ---- content requirements --------------------------------------------------------- */
+
+.spread {
+  justify-content: space-between;
+}
+.duration {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 400;
+}
+.duration input {
+  width: 4.5rem;
+}
+.file-btn {
+  flex-direction: row;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.doc-editor {
+  min-height: 18rem;
+  line-height: 1.55;
+}
+.requirements {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.doc {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  max-height: 32rem;
+  overflow: auto;
+}
+.doc-clipped {
+  max-height: 9rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+.requirements .btn {
+  align-self: flex-start;
+}
+
+/* ---- signing panel ---------------------------------------------------------------- */
+
+.signing .kv {
+  margin: 0.75rem 0;
+}
+.signing .chip {
+  margin-left: 0.4rem;
+}
+.compact-stats {
+  margin: 0.75rem 0;
+}
+.compact-stats .stat-value {
+  font-size: 1.1rem;
+}
+
+/* ---- agent profile builder, negotiation room, compliance ------------------------------ */
+
+label.check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: normal;
+}
+label.check input {
+  width: auto;
+}
+.weights {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+.weight {
+  display: grid;
+  grid-template-columns: 12rem 1fr 3rem;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: normal;
+}
+.policy-card h3 {
+  margin-top: 1rem;
+}
+.negotiation .table {
+  margin: 0.5rem 0 0.75rem;
+}
+.negotiation h4,
+.policies {
+  margin: 0.75rem 0 0.35rem;
+}
+.decisions {
+  display: grid;
+  gap: 0.6rem;
+  padding-left: 1.2rem;
+}
+.policies details {
+  margin-bottom: 0.35rem;
+}
+.policies summary {
+  cursor: pointer;
+}
+.reply-escalate,
+.reply-clarify {
+  color: var(--warn, #b26b00);
+}
+@media (max-width: 640px) {
+  .weight {
+    grid-template-columns: 1fr;
   }
 }

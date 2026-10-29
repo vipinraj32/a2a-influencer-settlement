@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../../api";
 import { DealDetail } from "../../components/DealDetail";
+import { Requirements } from "../../components/Requirements";
 import { ActionButton, Avatar, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
-import { humanize, num, usd, when } from "../../format";
+import { DELIVERABLE_LABEL, humanize, num, usd, videoLength, when } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { useMe, useSession } from "../../session";
 import type { InfluencerDeal } from "../../types";
@@ -14,20 +15,38 @@ const IN_ESCROW = new Set(["FUNDED", "PROOF_SUBMITTED", "PROOF_REJECTED", "VERIF
 function ProofForm({ deal, onDone }: { deal: InfluencerDeal; onDone: () => void }) {
   const { status } = useSession();
   const [url, setUrl] = useState("");
+  const [inVideo, setInVideo] = useState(false);
   const tags = deal.terms?.required_tags.join(" ") ?? "#ad";
+  const rules = deal.terms?.disclosure_policies ?? [];
   return (
     <div className="proof-form">
       <p>
-        Post your {humanize(deal.campaign.deliverable)} on your verified channel before <strong>{when(deal.terms?.publish_by)}</strong>. Put{" "}
-        <code>{deal.campaign.brand_handle}</code> and <code>{tags}</code> in the description, then paste the link here.
+        Post your {DELIVERABLE_LABEL[deal.campaign.deliverable] ?? deal.campaign.deliverable} on your verified channel before{" "}
+        <strong>{when(deal.terms?.publish_by)}</strong>. Put <code>{deal.campaign.brand_handle}</code> and <code>{tags}</code> in the description, then
+        paste the link here.
       </p>
+      {deal.campaign.max_duration_seconds > 0 && (
+        <p className="small">
+          Video length must be <strong>{videoLength(deal.campaign.min_duration_seconds, deal.campaign.max_duration_seconds)}</strong>. The verifier reads it
+          from YouTube.
+        </p>
+      )}
+      {rules.length > 0 && (
+        <p className="small">
+          Disclosure rules {rules.join(", ")}: put the label in the title or at the very start of the description, and show or say it in the video itself.
+        </p>
+      )}
+      <label className="check">
+        <input type="checkbox" checked={inVideo} onChange={(e) => setInVideo(e.target.checked)} />I confirm the sponsorship disclosure is shown or said in the
+        video itself (YouTube's API cannot check this, so it is recorded as your statement)
+      </label>
       {!status?.verifier_online && <Notice tone="warn">The verifier is offline: the server needs YOUTUBE_API_KEY.</Notice>}
       <div className="row">
         <input className="grow" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://youtube.com/shorts/…" maxLength={300} />
         <ActionButton
           disabled={!url.trim()}
           onClick={async () => {
-            await api.submitProof(deal.id, url.trim());
+            await api.submitProof(deal.id, url.trim(), inVideo ? { in_video_disclosure: true } : {});
             setUrl("");
             onDone();
           }}
@@ -138,6 +157,14 @@ export function InfluencerHome() {
             actions={
               <>
                 {deal.campaign.brief && <p className="brief">“{deal.campaign.brief}”</p>}
+                <h3>Content requirements</h3>
+                <Requirements
+                  deliverable={deal.campaign.deliverable}
+                  min={deal.campaign.min_duration_seconds}
+                  max={deal.campaign.max_duration_seconds}
+                  text={deal.campaign.requirements}
+                  hash={deal.terms?.requirements_hash}
+                />
                 {NEEDS_PROOF.has(deal.state) && <ProofForm deal={deal} onDone={() => void deals.reload()} />}
               </>
             }

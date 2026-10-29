@@ -15,10 +15,12 @@ Core rule: **the LLM proposes, deterministic code decides, the key signs.** No p
 Python 3.13 project managed with uv; package in `src/zyroxq/` (see README "Folder structure").
 - `services/deals.py` owns the deal lifecycle; `agents/advertiser/graph.py` only negotiates, gates and signs through it.
 - Simulated vs real backends are chosen in `services/context.py` from settings; hosted HSP mode refuses to start without an on-chain escrow.
+- Negotiation decisions come from `agent_policy/engine.py` (deterministic; the LLM only suggests). Profiles are versioned in the store (`agent_policy`, key = user id) and campaigns snapshot the advertiser version; influencer floors never leave the creator's side (directory strips `rate_card`, A2A replies use template explanations). Disclosure policies live in `compliance/` and are snapshotted per campaign as `JUR@version`.
 - Signing happens only in fixed code paths after `policy/` checks — never expose it as an LLM/MCP tool. The advertiser's browser wallet signs the Payment Mandate (server drafts the EIP-712 data, verifies the signature); influencer agents sign terms with a server-held agent key that the payout wallet authorized (`policy.delegation_valid`).
 - No demo fixtures: users sign in with Google (`auth/`); influencers come from the user store (`services/registry.py`) and are served by `agents/influencer/hub.py`. `FixtureVideoSource` is for tests only.
 - Frontend: `web/` (React + TypeScript + Vite). `npm run build` writes to `src/zyroxq/api/static` (gitignored); `npm run dev` on :5173 proxies the API on :8000. Live updates come from `/api/stream` (SSE, filtered per user).
 - Escrow rules exist twice (`contracts/CampaignEscrow.sol` and `chain/escrow.py` SimulatedEscrow) — change both together; `attestation_digest` must match the contract.
+- Funding: a deal is FUNDED only via `DealService._settle` → `chain/settlement.py` evidence (receipt Transfer payer → escrow, exact cap) → `escrow.mark_funded(deal, tx)`. Webhooks and lookups are claims. Ambiguous outcomes go to PAYMENT_UNKNOWN and are reconciled, never re-signed. State changes must follow `models.DEAL_TRANSITIONS`. Budget caps are reserved atomically (`store.reserve_budget`).
 - Recompile the contract with `uv run python scripts/compile_contracts.py` (writes `contracts/build/CampaignEscrow.json`).
 
 ## Stack

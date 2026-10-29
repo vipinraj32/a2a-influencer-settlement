@@ -1,4 +1,5 @@
-from typing import Protocol
+from decimal import Decimal
+from typing import Any, Protocol
 
 from ..models import AuditEvent, Campaign, Deal, User
 
@@ -19,3 +20,32 @@ class Store(Protocol):
     async def claim_webhook(self, request_id: str, status: str) -> bool:
         """True the first time a (request_id, status) pair is seen — makes webhook handling idempotent."""
         ...
+
+    async def claim(self, kind: str, key: str, owner: str) -> str:
+        """Atomically binds `key` to `owner` the first time it is seen and returns whoever holds it.
+        Used for one-time values: authorization nonces and funding transactions (kind = "auth_nonce" | "funding_tx")."""
+        ...
+
+    async def reserve_budget(self, campaign_id: str, deal_id: str, amount: Decimal, budget: Decimal) -> bool:
+        """Atomically reserves `amount` of the campaign budget for a deal; False if it would exceed `budget`.
+        Re-reserving the same deal is idempotent."""
+        ...
+
+    async def release_budget(self, deal_id: str) -> None: ...
+    async def reserved_budget(self, campaign_id: str, exclude: str | None = None) -> Decimal: ...
+
+    # Versioned documents: agent policies (kind "agent_policy", key = user id) and disclosure policies
+    # (kind "disclosure_policy", key = jurisdiction). Versions are immutable and numbered from 1.
+    async def save_version(self, kind: str, key: str, doc: dict[str, Any]) -> dict[str, Any]:
+        """Stores `doc` as the next version and returns it with `version` and `updated_at` set."""
+        ...
+
+    async def get_version(self, kind: str, key: str, version: int | None = None) -> dict[str, Any] | None:
+        """A specific version, or the latest when `version` is None."""
+        ...
+
+    async def list_versions(self, kind: str, key: str) -> list[dict[str, Any]]: ...
+
+    # Negotiation decision records, private to the party that made them
+    async def add_decision(self, record: dict[str, Any]) -> None: ...
+    async def list_decisions(self, deal_id: str, party: str | None = None) -> list[dict[str, Any]]: ...

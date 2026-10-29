@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -44,6 +48,37 @@ CREATE TABLE IF NOT EXISTS webhook_receipts (
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (request_id, status)
 );
+CREATE TABLE IF NOT EXISTS claims (
+    kind        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    claimed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, key)
+);
+CREATE TABLE IF NOT EXISTS budget_reservations (
+    deal_id     TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+    amount      NUMERIC(20, 6) NOT NULL,
+    reserved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS budget_campaign_idx ON budget_reservations (campaign_id);
+CREATE TABLE IF NOT EXISTS versioned_docs (
+    kind        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    data        JSONB NOT NULL,
+    PRIMARY KEY (kind, key, version)
+);
+CREATE TABLE IF NOT EXISTS negotiation_decisions (
+    id          TEXT PRIMARY KEY,
+    deal_id     TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    party       TEXT NOT NULL,
+    at          TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS decisions_deal_idx ON negotiation_decisions (deal_id, at);
 """
 
 
@@ -150,3 +185,76 @@ class PostgresStore:
         async with self.pool.connection() as conn:
             cur = await conn.execute("INSERT INTO webhook_receipts (request_id, status) VALUES (%s, %s) ON CONFLICT DO NOTHING", (request_id, status))
             return cur.rowcount == 1
+
+    async def claim(self, kind: str, key: str, owner: str) -> str:
+        async with self.pool.connection() as conn:
+            await conn.execute("INSERT INTO claims (kind, key, owner) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (kind, key.lower(), owner))
+            row = await (await conn.execute("SELECT owner FROM claims WHERE kind = %s AND key = %s", (kind, key.lower()))).fetchone()
+        assert row is not None
+        return row[0]
+
+    async def reserve_budget(self, campaign_id: str, deal_id: str, amount: Decimal, budget: Decimal) -> bool:
+        async with self.pool.connection() as conn, conn.transaction():
+            # Row lock on the campaign serializes concurrent reservations across processes
+            await conn.execute("SELECT 1 FROM campaigns WHERE id = %s FOR UPDATE", (campaign_id,))
+            row = await (await conn.execute("SELECT amount FROM budget_reservations WHERE deal_id = %s", (deal_id,))).fetchone()
+            if row is not None:
+                return Decimal(row[0]) == amount
+            used = await (await conn.execute("SELECT COALESCE(SUM(amount), 0) FROM budget_reservations WHERE campaign_id = %s", (campaign_id,))).fetchone()
+            assert used is not None
+            if Decimal(used[0]) + amount > budget:
+                return False
+            await conn.execute("INSERT INTO budget_reservations (deal_id, campaign_id, amount) VALUES (%s, %s, %s)", (deal_id, campaign_id, amount))
+            return True
+
+    async def release_budget(self, deal_id: str) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute("DELETE FROM budget_reservations WHERE deal_id = %s", (deal_id,))
+
+    async def reserved_budget(self, campaign_id: str, exclude: str | None = None) -> Decimal:
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM budget_reservations WHERE campaign_id = %s AND deal_id <> %s", (campaign_id, exclude or "")
+            )).fetchone()  # fmt: skip
+        assert row is not None
+        return Decimal(row[0])
+
+    async def save_version(self, kind: str, key: str, doc: dict[str, Any]) -> dict[str, Any]:
+        async with self.pool.connection() as conn, conn.transaction():
+            # Serializes writers of the same document so version numbers never collide
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"{kind}:{key}",))
+            row = await (await conn.execute("SELECT COALESCE(MAX(version), 0) FROM versioned_docs WHERE kind = %s AND key = %s", (kind, key))).fetchone()
+            assert row is not None
+            saved = {**doc, "version": row[0] + 1, "updated_at": datetime.now(UTC).isoformat()}
+            await conn.execute("INSERT INTO versioned_docs (kind, key, version, data) VALUES (%s, %s, %s, %s)", (kind, key, saved["version"], Jsonb(saved)))
+        return saved
+
+    async def get_version(self, kind: str, key: str, version: int | None = None) -> dict[str, Any] | None:
+        async with self.pool.connection() as conn:
+            if version is None:
+                cur = await conn.execute("SELECT data FROM versioned_docs WHERE kind = %s AND key = %s ORDER BY version DESC LIMIT 1", (kind, key))
+            else:
+                cur = await conn.execute("SELECT data FROM versioned_docs WHERE kind = %s AND key = %s AND version = %s", (kind, key, version))
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def list_versions(self, kind: str, key: str) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute("SELECT data FROM versioned_docs WHERE kind = %s AND key = %s ORDER BY version", (kind, key))).fetchall()
+        return [r[0] for r in rows]
+
+    async def add_decision(self, record: dict[str, Any]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO negotiation_decisions (id, deal_id, campaign_id, party, at, data) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (record["id"], record["deal_id"], record["campaign_id"], record["party"], record["at"], Jsonb(record)),
+            )
+
+    async def list_decisions(self, deal_id: str, party: str | None = None) -> list[dict[str, Any]]:
+        sql, params = "SELECT data FROM negotiation_decisions WHERE deal_id = %s", [deal_id]
+        if party is not None:
+            sql += " AND party = %s"
+            params.append(party)
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(sql + " ORDER BY at, id", params)).fetchall()
+        return [r[0] for r in rows]

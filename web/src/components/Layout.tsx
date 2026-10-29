@@ -80,6 +80,7 @@ export function Layout() {
               </NavLink>
               <NavLink to="/advertiser/new">New campaign</NavLink>
               <NavLink to="/advertiser/creators">Creators</NavLink>
+              <NavLink to="/advertiser/agent">My agent</NavLink>
             </>
           ) : (
             <>

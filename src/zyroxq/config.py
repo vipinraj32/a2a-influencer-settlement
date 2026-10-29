@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     escrow_address: str = ""  # empty → simulated escrow ledger
     operator_private_key: str = ""  # platform key: registers deals, triggers releases
     verifier_private_key: str = ""  # signs proof attestations
+    # Settlement evidence: confirmations a funding transaction needs before a deal is FUNDED
+    settlement_min_confirmations: int = 2
+
+    # Payment authorizations (EIP-3009): lifetime of a drafted authorization, and the minimum time it must
+    # have left when submitted (so it cannot expire in flight)
+    authorization_ttl_seconds: int = 3600
+    authorization_min_remaining_seconds: int = 120
+    hsp_submit_timeout_seconds: float = 30
 
     # Verifier
     youtube_api_key: str = ""  # required to verify video proofs

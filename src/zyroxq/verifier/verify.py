@@ -23,7 +23,7 @@ def check_video(terms: DealTerms, video: VideoInfo | None, agreed_at: datetime, 
     text = f"{video.title}\n{video.description}".lower()
     missing = [t for t in [*terms.required_tags, brand_handle] if t.lower() not in text]
     injection = _INJECTION.search(video.description) or _INJECTION.search(video.title)
-    return [
+    checks = [
         ProofCheck(name="exists", passed=True, detail=video.video_id),
         ProofCheck(name="public", passed=video.privacy_status == "public", detail=video.privacy_status),
         ProofCheck(
@@ -43,6 +43,16 @@ def check_video(terms: DealTerms, video: VideoInfo | None, agreed_at: datetime, 
             detail="clean" if injection is None else f"found {injection.group(0)!r} → manual review",
         ),
     ]
+    if terms.max_duration_seconds:
+        length = video.duration_seconds
+        checks.append(
+            ProofCheck(
+                name="video_length",
+                passed=length is not None and terms.min_duration_seconds <= length <= terms.max_duration_seconds,
+                detail=f"{'unknown' if length is None else f'{length}s'}, required {terms.min_duration_seconds}-{terms.max_duration_seconds}s",
+            )
+        )
+    return checks
 
 
 def all_passed(checks: list[ProofCheck]) -> bool:

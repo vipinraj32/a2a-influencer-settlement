@@ -1,26 +1,30 @@
 """Settlement gateways.
 
 `SimulatedGateway` emulates HSP end to end: it keeps the Cart Mandate, verifies the signed Payment
-Mandate the way the gateway must (signer, payee, amount, validity window, nonce reuse), moves funds
-into the simulated escrow and delivers HMAC-signed webhooks through the real verification path.
+Mandate the way the gateway must (signer, payee, amount, validity window, nonce reuse), records a
+simulated transfer into the simulated escrow and delivers HMAC-signed webhooks through the real
+verification path. Nothing it does moves real tokens.
 
 `HostedGateway` is the real HSP merchant API. HSP's payer-side submission is not publicly documented,
-so the advertiser signs in HSP's hosted checkout (`payment_url`) and the webhook settles the deal.
+so the advertiser signs in HSP's hosted checkout (`payment_url`) and the webhook reports the payment.
+
+Neither gateway's word is proof of payment: DealService verifies the settlement transaction itself
+(chain/settlement.py) before a deal is FUNDED.
 """
 
 from __future__ import annotations
 
 import json
-import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+import httpx
 from pydantic import BaseModel
 
 from ..chain.escrow import SimulatedEscrow
 from ..clock import Clock
 from ..hsp.cart import cart_method, cart_total
-from ..hsp.client import HspClient
+from ..hsp.client import HspApiError, HspClient
 from ..hsp.networks import TokenInfo
 from ..hsp.webhook import sign_webhook
 from .signer import PaymentMandate, recover_payment_mandate_signer, to_token_units
@@ -36,20 +40,37 @@ class OrderResult(BaseModel):
 
 
 class GatewayRejected(Exception):
-    pass
+    """The gateway definitively refused: nothing was or will be settled for this authorization."""
+
+
+class GatewayUnavailable(Exception):
+    """Timeout, transport error or server error: the payment may or may not have gone through."""
+
+
+class PaymentLookup(BaseModel):
+    """What the gateway reports about a payment request. A claim to verify, not evidence."""
+
+    status: str  # HSP payment status, e.g. payment-included | payment-finalized | payment-failed
+    tx_hash: str | None = None
+    payer: str | None = None
 
 
 class Gateway(Protocol):
     name: str
-    agent_signing: bool  # True → the Payment Agent signs and submits the mandate itself
+    simulated: bool
+    agent_signing: bool  # True → the advertiser's wallet signs the mandate here and we submit it
     webhook_secret: str
 
     async def create_order(self, contents: dict[str, Any]) -> OrderResult: ...
     async def submit_payment_mandate(self, mandate: PaymentMandate) -> str: ...
+    async def lookup_payment(self, payment_request_id: str) -> PaymentLookup | None:
+        """None when the gateway has no record (yet). Raises GatewayUnavailable when it cannot be asked."""
+        ...
 
 
 class SimulatedGateway:
     name = "simulated"
+    simulated = True
     agent_signing = True
     webhook_secret = SIMULATED_APP_SECRET
 
@@ -61,6 +82,7 @@ class SimulatedGateway:
         self.sink: WebhookSink | None = None
         self._carts: dict[str, dict[str, Any]] = {}
         self._used_nonces: set[str] = set()
+        self._payments: dict[str, PaymentLookup] = {}
 
     async def create_order(self, contents: dict[str, Any]) -> OrderResult:
         prid = contents["payment_request"]["details"]["id"]
@@ -76,12 +98,15 @@ class SimulatedGateway:
         self._verify(mandate, contents)
         auth = mandate.authorization
         self._used_nonces.add(auth["nonce"])
-        tx = "0xsim" + secrets.token_hex(30)
-        # The EIP-3009 transfer lands in pay_to, which is the escrow contract
-        self.escrow.credit(int(auth["value"]))
+        # The EIP-3009 transfer lands in pay_to, which is the escrow contract (simulated ledger entry)
+        tx = self.escrow.receive_transfer(auth["from"], int(auth["value"]), auth["nonce"])
         for status in ("payment-included", "payment-finalized"):
+            self._payments[mandate.payment_mandate_id] = PaymentLookup(status=status, tx_hash=tx, payer=mandate.payer)
             await self._emit(contents, mandate, status, tx)
         return tx
+
+    async def lookup_payment(self, payment_request_id: str) -> PaymentLookup | None:
+        return self._payments.get(payment_request_id)
 
     def _verify(self, mandate: PaymentMandate, contents: dict[str, Any]) -> None:
         auth = mandate.authorization
@@ -130,6 +155,7 @@ class SimulatedGateway:
 
 class HostedGateway:
     name = "hosted"
+    simulated = False
     agent_signing = False
 
     def __init__(self, client: HspClient, redirect_url: str | None = None) -> None:
@@ -142,4 +168,23 @@ class HostedGateway:
         return OrderResult(payment_request_id=data["payment_request_id"], payment_url=data["payment_url"])
 
     async def submit_payment_mandate(self, mandate: PaymentMandate) -> str:
+        # Blocked on HashKey: the payer-side endpoint (/api/v1/payment/pay-mandate) and its payload are not
+        # documented, so a browser-signed authorization cannot be submitted. Never reached: agent_signing is False.
         raise GatewayRejected("HSP payer-side submission is not public: sign in the hosted checkout (payment_url)")
+
+    async def lookup_payment(self, payment_request_id: str) -> PaymentLookup | None:
+        """GET /merchant/payments?payment_request_id=… (documented). The response is read with the same
+        field names as the webhook payload; unknown shapes yield None so the deal stays unreconciled."""
+        try:
+            data = await self.client.get_payment(payment_request_id=payment_request_id)
+        except HspApiError as e:
+            if e.http_status >= 500 or e.code == -1:
+                raise GatewayUnavailable(str(e)) from e
+            return None
+        except httpx.HTTPError as e:
+            raise GatewayUnavailable(f"HSP unreachable: {type(e).__name__}") from e
+        record = data[0] if isinstance(data, list) and data else data
+        if not isinstance(record, dict) or not isinstance(record.get("status"), str):
+            return None
+        tx = record.get("tx_signature") or record.get("tx_hash")
+        return PaymentLookup(status=record["status"], tx_hash=tx if isinstance(tx, str) else None, payer=record.get("payer_address"))

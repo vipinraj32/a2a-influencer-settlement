@@ -8,6 +8,8 @@ from typing import Any
 
 from eth_account import Account
 from eth_account.messages import encode_defunct, encode_typed_data
+from eth_keys.exceptions import BadSignature
+from eth_utils.exceptions import ValidationError
 from pydantic import BaseModel
 from web3 import Web3
 
@@ -132,15 +134,15 @@ def recover_payment_mandate_signer(mandate: PaymentMandate, token: TokenInfo, do
     )
     try:
         return Account.recover_message(encoded, signature=mandate.x402["payload"]["signature"])
-    except (ValueError, TypeError):
-        return ""  # malformed signature from the browser
+    except (ValueError, TypeError, ValidationError, BadSignature):  # malformed signature from the browser
+        return ""
 
 
 def recover_personal_sign(message: str, signature: str) -> str | None:
     """Signer of an EIP-191 `personal_sign` text message (wallet linking, agent delegation)."""
     try:
         return Account.recover_message(encode_defunct(text=message), signature=signature)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, ValidationError, BadSignature):  # malformed signature from the browser
         return None
 
 

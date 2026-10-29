@@ -30,6 +30,16 @@ class VideoInfo(BaseModel):
     published_at: datetime
     privacy_status: str
     views: int
+    duration_seconds: int | None = None
+
+
+def parse_iso_duration(value: str) -> int | None:
+    """YouTube contentDetails.duration, e.g. PT1M5S → 65."""
+    m = re.fullmatch(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", value or "")
+    if not m or not any(m.groups()):
+        return None
+    d, h, mi, s = (int(g or 0) for g in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + s
 
 
 class VideoSource(Protocol):
@@ -46,7 +56,7 @@ class YouTubeDataApi:
         self._http = http or httpx.AsyncClient(timeout=15)
 
     async def get_video(self, video_id: str) -> VideoInfo | None:
-        res = await self._http.get(self.URL, params={"part": "snippet,statistics,status", "id": video_id, "key": self.api_key})
+        res = await self._http.get(self.URL, params={"part": "snippet,statistics,status,contentDetails", "id": video_id, "key": self.api_key})
         res.raise_for_status()
         items = res.json().get("items", [])
         if not items:
@@ -60,6 +70,7 @@ class YouTubeDataApi:
             published_at=datetime.fromisoformat(item["snippet"]["publishedAt"].replace("Z", "+00:00")),
             privacy_status=item["status"]["privacyStatus"],
             views=int(item["statistics"].get("viewCount", 0)),
+            duration_seconds=parse_iso_duration(item.get("contentDetails", {}).get("duration", "")),
         )
 
 

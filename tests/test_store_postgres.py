@@ -60,3 +60,42 @@ async def test_users(store):
     assert (await store.get_user_by_email(user.email)).id == uid
     assert uid in {u.id for u in await store.list_users("influencer")}
     assert uid not in {u.id for u in await store.list_users("advertiser")}
+
+
+async def test_budget_reservations_and_claims_are_atomic(store, campaign):
+    import asyncio
+    from decimal import Decimal
+
+    cid = new_id("CMP")
+    await store.save_campaign(Campaign(spec=campaign.model_copy(update={"id": cid}), created_at=datetime.now(UTC)))
+    deals = [new_id("DEAL") for _ in range(6)]
+    got = await asyncio.gather(*(store.reserve_budget(cid, d, Decimal("40"), Decimal("120")) for d in deals))
+    assert sum(got) == 3 and await store.reserved_budget(cid) == Decimal("120")
+    winner = deals[got.index(True)]
+    assert await store.reserve_budget(cid, winner, Decimal("40"), Decimal("120"))  # idempotent
+    await store.release_budget(winner)
+    assert await store.reserved_budget(cid) == Decimal("80")
+    assert await store.reserved_budget(cid, exclude=deals[got.index(True, got.index(True) + 1)]) == Decimal("40")
+
+    nonce = "0x" + new_id("n").encode().hex().ljust(64, "0")
+    owners = await asyncio.gather(*(store.claim("auth_nonce", nonce, d) for d in deals))
+    assert len(set(owners)) == 1 and await store.claim("auth_nonce", nonce.upper().replace("0X", "0x"), "other") == owners[0]
+
+
+async def test_versioned_documents_and_decisions(store):
+    import asyncio
+
+    key = new_id("USR")
+    saved = await asyncio.gather(*(store.save_version("agent_policy", key, {"role": "advertiser", "n": i}) for i in range(5)))
+    assert sorted(s["version"] for s in saved) == [1, 2, 3, 4, 5]  # concurrent writers never share a version
+    assert (await store.get_version("agent_policy", key))["version"] == 5
+    assert (await store.get_version("agent_policy", key, 2))["version"] == 2
+    assert [v["version"] for v in await store.list_versions("agent_policy", key)] == [1, 2, 3, 4, 5]
+    assert await store.get_version("agent_policy", key, 9) is None
+
+    deal = new_id("DEAL")
+    for party in ("advertiser", "influencer"):
+        await store.add_decision({"id": new_id("DEC"), "deal_id": deal, "campaign_id": "CMP-x", "party": party,
+                                  "at": datetime.now(UTC).isoformat(), "action": "ACCEPT"})  # fmt: skip
+    assert {d["party"] for d in await store.list_decisions(deal)} == {"advertiser", "influencer"}
+    assert [d["party"] for d in await store.list_decisions(deal, "influencer")] == ["influencer"]

@@ -152,9 +152,9 @@ async def test_gateway_rejects_tampered_mandate(terms):
 
 def test_escrow_release_requires_verifier_attestation(terms):
     escrow = SimulatedEscrow(verifier=Account.from_key(VERIFIER_KEY).address)
-    escrow.credit(40_000_000)
+    tx = escrow.receive_transfer(Account.from_key(ADVERTISER_KEY).address, 40_000_000)
     escrow.register_deal(terms.deal_id, Account.from_key(ADVERTISER_KEY).address, terms.payee, 40_000_000, 0)
-    escrow.mark_funded(terms.deal_id)
+    escrow.mark_funded(terms.deal_id, tx)
     passed = [ProofCheck(name="exists", passed=True)]
 
     forged = Attestor("0x" + "44" * 32, escrow.address, escrow.chain_id).attest(terms.deal_id, "v", terms.payee, Decimal("20"), "fixed", passed)
@@ -185,4 +185,16 @@ def test_escrow_needs_funding_before_mark_funded(terms):
     escrow = SimulatedEscrow(verifier=Account.from_key(VERIFIER_KEY).address)
     escrow.register_deal(terms.deal_id, "0x" + "aa" * 20, terms.payee, 40_000_000, 0)
     with pytest.raises(EscrowError, match="funding"):
-        escrow.mark_funded(terms.deal_id)
+        escrow.mark_funded(terms.deal_id, "0x" + "ab" * 32)
+
+
+def test_content_rules_cannot_change_during_negotiation(campaign, offer, influencer, terms):
+    from zyroxq.models import requirements_hash
+
+    spec = campaign.model_copy(update={"requirements": "Brief v1", "min_duration_seconds": 15, "max_duration_seconds": 60})
+    good = offer.model_copy(update={"requirements_hash": requirements_hash("Brief v1"), "min_duration_seconds": 15, "max_duration_seconds": 60})
+    assert check_offer(spec, good).ok
+    for change in ({"requirements_hash": requirements_hash("Brief v2")}, {"max_duration_seconds": 120}):
+        assert "video length or requirements changed" in check_offer(spec, good.model_copy(update=change)).violations
+    # Terms signed without the brief do not match a campaign that has one
+    assert "signed terms cover different video length or requirements" in check_terms(spec, terms, influencer, good).violations

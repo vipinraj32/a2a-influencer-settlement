@@ -133,7 +133,7 @@ MCP for Claude Desktop (server must be running): `uv run zyroxq mcp` over stdio 
 1. Generate the merchant secp256k1 key → send the public key to HashKey → receive app_key/app_secret
 2. Deploy CampaignEscrow on HashKey Chain Testnet (chain 133)
 3. Influencers onboard: YouTube OAuth → channel_id verified → Influencer Agent + Agent Card published
-4. Advertiser funds a wallet with testnet USDC
+4. Advertiser funds a wallet with testnet USDC (hosted mode only; no faucet is documented yet, see Open questions)
 ```
 
 ### Phase 1: Campaign brief
@@ -144,6 +144,12 @@ Advertiser: "Fitness brand, $300 budget, 3 creators, 10k–100k subs, YouTube Sh
 Advertiser Agent [plan_campaign]  → LLM turns the text into a structured CampaignSpec
                                     → Policy Engine validates the budget against the wallet limits
 ```
+The **Content requirements** card on *New campaign* sets the format (YouTube Short ≤ 3 min or a regular video), the min/max
+video length and a requirements document of up to 15,000 characters (about 1–5 pages). You can type it, import a .txt/.md
+file or start from an outline. The document goes to every influencer agent with the offer. Its keccak hash
+(`requirements_hash`) and the length bounds are part of the signed `DealTerms`, and the policy engine refuses terms that
+changed them. At proof time the verifier reads the real duration from YouTube `contentDetails` and fails the
+`video_length` check when it is out of range.
 
 ### Phase 2: Discovery (A2A)
 ```
@@ -156,11 +162,12 @@ Advertiser Agent [plan_campaign]  → LLM turns the text into a structured Campa
 ```
 For each influencer (in parallel, LangGraph Send API):
   Advertiser Agent ──A2A message: Offer{fixed $15, $2/1K views, cap $40}──▶ Influencer Agent
-  Influencer Agent: LLM evaluates → rules enforce the floor price → Counter{fixed $20}
-  Advertiser Agent: LLM proposes a reply → POLICY checks it (≤ max CPM, ≤ budget) → Accept
+  Influencer Agent: LLM may suggest → Agent Policy Engine decides (hard limits, scoring) → Counter{fixed $20}
+  Advertiser Agent: LLM may suggest → Agent Policy Engine + check_offer decide → Accept
   Influencer Agent ──A2A artifact: signed DealTerms──▶ Advertiser Agent
-Max rounds = 3, then walk away.
+Bounded by the campaign's max rounds (default 4). Decline, no movement and escalation are valid outcomes.
 ```
+See [Configurable agents](#configurable-agents-objectives-constraints-preferences) for how each side decides.
 
 ### Phase 4: Cart Mandate (merchant side, HSP)
 ```
@@ -178,20 +185,26 @@ Advertiser Agent [policy_gate]  ← deterministic checks:
     ✔ Cart amount == agreed cap      ✔ pay_to == our escrow
     ✔ chain/token allowed            ✔ total spend ≤ campaign budget
     ✔ no duplicate deal_id           ✔ cart not expired
+    ✔ atomic budget reservation (row lock), so concurrent deals cannot overspend
    │
    ├─ [approval] LangGraph interrupt → server drafts the EIP-712 data → advertiser signs in MetaMask
    ▼
-[verify + submit]       server checks the signer == campaign payer (code node, NOT an LLM tool)
-[submit_to_hsp]         HSP Gateway verifies → broadcasts on-chain
+[verify + submit]       server re-checks amount, recipient, token, chain, payer, expiry, budget and the
+                        signature, claims the nonce once, records a payment attempt, then submits
+[submit_to_hsp]         HSP verifies → executes transferWithAuthorization on the token
 ```
 
 ### Phase 6: Settlement confirmation
 ```
-HSP → POST /webhooks/hsp (X-Signature verified, idempotent on request_id)
+HSP → POST /webhooks/hsp (X-Signature verified; every transition idempotent)
    payment-included  → deal = FUNDING
-   payment-finalized → deal = FUNDED ✅ → A2A message to Influencer Agent: "money locked, tx 0x…"
-   payment-failed    → deal = FAILED → Advertiser Agent retries or cancels
+   payment-finalized → a claim, not proof: the settlement receipt must show Transfer(payer → escrow, exact cap)
+                       of the configured token with enough confirmations; the tx is bound to one deal only
+                       → escrow.markFunded(deal, tx) → deal = FUNDED ✅ → A2A "money locked, tx 0x…"
+   payment-failed    → deal = PAYMENT_FAILED, budget released
+   timeout / 5xx     → deal = PAYMENT_UNKNOWN → reconciled (HSP lookup + chain), never re-signed
 ```
+See **Funding** below for the details and what is still blocked.
 
 ### Phase 7: Content and verification
 ```
@@ -218,17 +231,24 @@ Advertiser disputes in the review window → DISPUTED → arbiter decides the sp
 
 ## Deal state machine
 
+Enforced by `models.DEAL_TRANSITIONS`: `DealService.save` refuses any other move.
+
 ```
 NEGOTIATING → AGREED → CART_CREATED → AWAITING_APPROVAL → SIGNED → FUNDING → FUNDED
-   │                                                                    │
-   └→ REJECTED                              ┌──────────────────────────┘
-                                            ▼
-                         AWAITING_PROOF → PROOF_SUBMITTED → VERIFIED → FIXED_RELEASED → COMPLETED
-                               │                │              │                          (perf paid,
-                               ▼                ▼              ▼                           rest refunded)
-                           EXPIRED →         REJECTED       DISPUTED → RESOLVED
-                           REFUNDED         (resubmit)
+ ├→ REJECTED            └→ BLOCKED      │  (needs the        (payment   (settling)  (settlement
+ └→ ESCALATED (a policy handed it to a human; nothing agreed or reserved)
+                                        │   signature)        pending)               verified)
+                                        ├→ PAYMENT_EXPIRED   SIGNED / FUNDING / AWAITING_CHECKOUT
+                                        ├→ PAYMENT_FAILED      ⇄ PAYMENT_UNKNOWN (timeout or unverifiable
+                                        ├→ REJECTED (declined)    evidence: reconciled, never re-signed)
+                                        └→ AWAITING_CHECKOUT (hosted)   any of them → PAYMENT_FAILED | FUNDED
+
+FUNDED → VERIFIED → FIXED_RELEASED → COMPLETED (performance paid, remainder refunded)
+  │         │  └→ DISPUTED (payouts frozen)
+  │         └→ PROOF_REJECTED (resubmit before the deadline)
+  └→ EXPIRED_REFUNDED (no valid proof by the deadline)
 ```
+Creators are told to post only at FUNDED, and proofs are refused before it.
 
 ---
 
@@ -253,6 +273,62 @@ receive_offer → llm_evaluate → floor_price_rule → {counter | accept | reje
 
 A LangGraph PostgreSQL checkpointer (`langgraph-checkpoint-postgres`) lets each deal survive restarts and wait days for proof.
 
+## Configurable agents: objectives, constraints, preferences
+
+Each creator and each advertiser configures their agent in the **Agent Profile Builder** (`/influencer/agent`,
+`/advertiser/agent`). A profile has three layers and is saved as an immutable version (`versioned_docs`):
+
+| Layer | Creator agent | Advertiser agent |
+|---|---|---|
+| Objective | primary goal (earnings, guaranteed income, brand fit, partnership, workload) + weights | primary goal (ROI, cost, reach, relevance, evidence quality, speed) + weights |
+| Hard constraints | minimum fixed fee and CPM, accepted compensation models, shortest publish window, max revisions, paid amplification, license and exclusivity limits, forbidden categories, brief required | per-campaign ceilings (max fixed, max CPM, cap, budget) + minimum verified subscribers, verified channel, blocked niches |
+| Preferences | opening ask, expected views (own estimate), preferred categories, brand-fit discount, acceptance score, escalate instead of decline, premiums for paid amplification / exclusivity / license / rush / extra revisions | opening percentages, concession per round, niche-fit premium, escalate above a fixed fee, acceptance score |
+
+**Decision order** (`agent_policy/engine.py`, no LLM, no I/O): hard constraints → money limits (with premiums) →
+utility score → `ACCEPT` / `COUNTEROFFER` / `REJECT` / `REQUEST_CLARIFICATION` / `ESCALATE_TO_HUMAN`. An LLM
+suggestion is used only where it still passes every check; overrides are recorded. Every decision is stored as
+a record with the objective, each hard check (pass/fail), the preferences applied, the scores, the action, the
+policy and pricing versions and the offer ids (`GET /api/deals/{id}/decisions`, own party only).
+
+**Privacy.** Profiles never leave their owner: the creator directory strips the rate card, A2A replies carry
+only fixed-template explanations (`public_explanation`), the model's note and the private rationale stay in
+the owner's decision record, offers carry template notes, and the creator's deal timeline hides the
+advertiser's moves and policy-gate details. Tests assert no floor value reaches the advertiser's API views.
+
+**Pricing** (`agent_policy/pricing.py`, version signed into the terms): `fixed` pays the fee (cap = fee),
+`cpm` pays `min(cap, views/1000 × CPM)`, `hybrid` pays `min(cap, fixed + views/1000 × CPM)`, rounded down to
+the cent. Example: $19 + $2.50 × 10,000/1,000 = $44 → capped at $40. Eligible views are YouTube's count when the
+performance fee is due, for a post that is still public and passes its checks.
+
+**Evidence** (`agent_policy/evidence.py`): each metric has a source (`youtube_data_api`, `self_reported`,
+`derived_estimate`, `unavailable`), a timestamp and a verified flag. Subscribers and channel come from the
+YouTube Data API; audience countries are self-reported; demographics and engagement are unknown because
+ZyroXQ has no YouTube Analytics access. Unknown is never filled in.
+
+**Sponsorship disclosure** (`compliance/`): versioned policies for India (Department of Consumer Affairs
+"Endorsements Know-hows!", ASCI) and the US (FTC Endorsement Guides, "Disclosures 101"), seeded as version 1
+and updatable by the operator (`PUT /api/disclosure-policies/{jurisdiction}`, operator token). A campaign
+snapshots the versions (`US@1`) and they are signed into the terms. Gates: campaign creation fails without a
+policy and an approved required tag per jurisdiction; creator agents decline offers without a compliant
+label; proofs need an approved label in the title or the first N characters of the description and the
+creator's attestation that the disclosure is in the video (recorded as a statement, not machine-verified);
+optionally the advertiser reviews each post before the fixed fee is released. These are product rules that
+summarize public guidance: **not legal advice, no guarantee of compliance.**
+
+**Agreement and approval.** The signed DealTerms are the canonical agreement and `terms_hash()` its id. The
+payment authorization is drafted for that hash (`approved_terms_hash`), approvals record it, and
+`authorization_problems` refuses to submit if the terms changed afterwards. Payment then follows the
+[funding flow](#funding-how-money-reaches-the-escrow) unchanged.
+
+| API | |
+|---|---|
+| `GET/PUT /api/me/agent-policy`, `POST …/validate`, `GET …/versions` | profile (loosening a hard constraint needs `confirm_material_change`, else 409 with the list) |
+| `GET /api/me/evidence`, `GET /api/influencers/{id}/evidence` | sourced creator metrics + public profile |
+| `GET /api/deals/{id}/negotiation`, `GET /api/deals/{id}/decisions` | Negotiation Room, own decision records |
+| `GET /api/campaigns/{id}/compliance`, `POST /api/deals/{id}/compliance/review` | Compliance & Audit, advertiser review |
+| `GET /api/disclosure-policies`, `PUT /api/disclosure-policies/{jurisdiction}` | policies (operator publishes) |
+| `GET /api/pricing/rules` | formulas, version, worked example |
+
 ## MCP server (what the LLM is allowed to touch)
 
 One read-only `zyroxq` MCP server, embedded at `/mcp/` (streamable HTTP) and runnable over stdio (`uv run zyroxq mcp`):
@@ -270,6 +346,83 @@ Signing, creating orders and releasing funds are deliberately **not** tools. The
 
 ---
 
+## Funding: how money reaches the escrow
+
+**The budget is a spending limit, not a balance.** Creating a $120 campaign moves nothing. When a deal passes the policy
+gate, its cap is *reserved* from the budget in one atomic step (`store.reserve_budget`: a `SELECT … FOR UPDATE` on the
+campaign row in PostgreSQL), so concurrent deals cannot overspend. A reservation is released when the deal is declined,
+blocked, fails or expires unused.
+
+**The signature authorizes; it does not pay.** For each deal the server drafts an EIP-3009 `TransferWithAuthorization`
+(EIP-712, domain = the token contract on chain 133): `from` = the campaign's linked wallet, `to` = the escrow,
+`value` = the cap in token units (6 decimals), a validity window (`AUTHORIZATION_TTL_SECONDS`) and a random 32-byte nonce.
+MetaMask signs it with `eth_signTypedData_v4`. The browser cannot change it, and the server re-checks every field, the
+expiry, the budget and the signer before submitting. Each nonce is claimed once for one deal (`store.claim`), and a
+payment attempt (idempotency key = nonce) is persisted before submission. The signing panel shows the budget, reserved
+and remaining amounts, the deal amounts, the escrow address, the expiry, the connected wallet and network, and the
+wallet's USDC balance with an insufficient-balance warning. The balance is advisory, because it can change before
+settlement. Deals settle independently: with funds for two of three deals, two are funded and the third fails with
+nothing locked.
+
+**FUNDED requires evidence.** A webhook, an HTTP 200 or a lookup only claims success. `chain/settlement.py` reads the
+settlement transaction's receipt and requires all of these:
+- status 1;
+- the configured chain;
+- an ERC-20 `Transfer` emitted by the configured token, from the payer to the escrow, for exactly the cap;
+- at least `SETTLEMENT_MIN_CONFIRMATIONS` confirmations.
+
+The transaction hash is then claimed for that one deal and bound in the contract with `markFunded(dealId, fundingTx)`.
+The contract refuses a reused hash and still checks that the unallocated balance covers the cap.
+
+Outcomes:
+- No receipt yet: the deal stays FUNDING.
+- Contradicting evidence, a reused transaction or a timeout: the deal becomes PAYMENT_UNKNOWN. The scheduler
+  reconciles it through `GET /merchant/payments` and the chain. A deal is marked failed only when HSP says so, or when
+  the authorization expired and the token reports it unused (`authorizationState`). A payment is never re-signed
+  blindly.
+
+**CampaignEscrow guarantees:**
+- Fixed at deployment: the token, the operator, the verifier and the arbiter.
+- Funding is attributed per deal by its settlement transaction.
+- Payouts need verifier attestations, which are replay-protected and capped per deal.
+- Refunds go only to the deal's advertiser.
+- `nonReentrant` on every function that transfers tokens.
+
+`SimulatedEscrow` mirrors these rules. Change both together.
+
+| | Simulated (`SETTLEMENT_MODE=simulated`, default) | Hosted (`SETTLEMENT_MODE=hosted`) |
+|---|---|---|
+| Payment | Browser-signed authorization, verified by an in-process HSP emulator | HSP hosted checkout (`payment_url`): the payer-side API is undocumented |
+| Settlement evidence | The simulated escrow's own receipts (tx hashes start `0x5111`) | Transaction receipt on HashKey Chain Testnet |
+| Money | **None moves.** Deals, payouts and refunds are labelled "simulated" | Real testnet USDC |
+| Start-up | Refuses `ESCROW_ADDRESS` | Refuses to start unless `HSP_APP_KEY`, `HSP_APP_SECRET`, the merchant key file, `ESCROW_ADDRESS`, `OPERATOR_PRIVATE_KEY` and `VERIFIER_PRIVATE_KEY` are set, the RPC is chain 133 and the deployed escrow's `token()`, `operator()` and `verifier()` match. It never falls back to simulation |
+
+**Configure hosted mode:**
+1. `uv run zyroxq gen-merchant-key`, then register the public key with HashKey to receive `HSP_APP_KEY` / `HSP_APP_SECRET`.
+2. `uv run python scripts/compile_contracts.py`.
+3. Run `uv run python scripts/deploy_escrow.py` with `OPERATOR_PRIVATE_KEY` (holding testnet HSK for gas) and
+   `VERIFIER_PRIVATE_KEY`. This sends a real transaction, and it prints `ESCROW_ADDRESS`.
+4. Set `SETTLEMENT_MODE=hosted` and restart. `/api/status` shows the mode.
+
+The advertiser needs testnet USDC in the linked wallet. No faucet is documented, so ask HashKey (Open questions above).
+
+**Still blocked externally:**
+- The HSP payer-side submission.
+- HSP's support for `pay_to` being a contract.
+- The QA Cloudflare 403.
+- A USDC faucet.
+- Confirming the testnet USDC's EIP-3009 domain and `authorizationState`.
+- The `GET /merchant/payments` response shape.
+
+The contract has not been deployed.
+
+**Tests:**
+- `uv run pytest` runs everything without credentials or funds. `tests/test_funding.py` covers each funding failure
+  mode, and `tests/test_e2e.py` covers the API flow.
+- Set `TEST_DATABASE_URL` to also run the PostgreSQL atomicity tests. Use a throwaway database.
+- The contract is compiled with solc 0.8.24, but there is no local-EVM test. `eth-tester[py-evm]` does not build on
+  Windows / Python 3.13 (`safe-pysha3`), so `SimulatedEscrow` tests stand in for the contract rules.
+
 ## Folder structure
 
 ```
@@ -280,8 +433,12 @@ src/zyroxq/
   clock.py             wall clock with dev fast-forward (simulated escrow only)
   hsp/                 canonical · auth (HMAC, ES256K JWT) · cart · client · webhook · networks
   policy/engine.py     every payment rule, pure functions
+  agent_policy/        configurable agents: profiles (3 layers), decision engine, pricing, evidence, material changes
+  compliance/          versioned sponsorship-disclosure policies (IN, US) + deterministic checks
   wallet/              signer (EIP-3009 Payment Mandate, EIP-191 terms) · gateway (simulated / hosted HSP)
   chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
+  chain/settlement.py  settlement evidence: receipt → Transfer(payer → escrow, exact amount); simulated twin
+  chain/balances.py    advisory USDC balance reads for the signing panel
   verifier/            youtube (Data API; fixture source for tests) · verify (checks) · attest (signed releases)
   auth/                Google OAuth + YouTube channel proof · wallet-link messages · agent-key encryption · API tokens
   agents/influencer/   LangGraph negotiation graph + A2A server + hub (one agent per onboarded creator)
@@ -317,6 +474,10 @@ tests/
 | Can an agent sign and submit the Payment Mandate programmatically? | Fully automated Phase 5 | The agent prepares everything, and the advertiser signs in HSP's hosted checkout (`payment_url`), as human-in-the-loop signing |
 | Can `pay_to` be a smart-contract address? | Funds lock in escrow up front | Pay-on-proof: a Cart Mandate is created after verification with `pay_to` = influencer |
 | Can the Cloudflare 403 on the QA gateway be lifted? | Direct API calls | IP allowlist, or run from a cloud VM |
+| What is the payer-side endpoint and payload (`/api/v1/payment/pay-mandate`)? | Browser-signed EIP-3009 authorizations are submitted directly in hosted mode | Hosted checkout (`payment_url`); `HostedGateway.submit_payment_mandate` stays disabled |
+| What does `GET /merchant/payments` return (field names for status and tx hash)? | Reconciliation reads it exactly | The adapter reads the webhook field names (`status`, `tx_signature`) and treats any other shape as "no record" |
+| Does HashKey testnet USDC (`0x8FE3…53c6`) implement EIP-3009 `authorizationState` and the domain `USD Coin` / `2`? | Signatures verify on chain; expired-unused authorizations can be proven | Check the token contract before going live; the EIP-712 domain is set in `wallet/signer.py` |
+| Is there a testnet USDC faucet on HashKey Chain Testnet? | Advertisers fund their wallet themselves | Hosted-mode demos need USDC from HashKey |
 
 ---
 

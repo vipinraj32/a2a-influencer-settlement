@@ -1,4 +1,4 @@
-from .gateway import Gateway, GatewayRejected, HostedGateway, OrderResult, SimulatedGateway
+from .gateway import Gateway, GatewayRejected, GatewayUnavailable, HostedGateway, OrderResult, PaymentLookup, SimulatedGateway
 from .signer import (
     PaymentMandate,
     recover_payment_mandate_signer,
@@ -11,8 +11,10 @@ from .signer import (
 __all__ = [
     "Gateway",
     "GatewayRejected",
+    "GatewayUnavailable",
     "HostedGateway",
     "OrderResult",
+    "PaymentLookup",
     "PaymentMandate",
     "SimulatedGateway",
     "recover_payment_mandate_signer",

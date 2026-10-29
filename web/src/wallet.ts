@@ -42,6 +42,16 @@ export async function connect(): Promise<string> {
   }
 }
 
+/** The chain the wallet is on right now (EIP-155 id), or null without a wallet. */
+export async function currentChainId(): Promise<number | null> {
+  if (!window.ethereum) return null;
+  try {
+    return parseInt((await window.ethereum.request({ method: "eth_chainId" })) as string, 16);
+  } catch {
+    return null;
+  }
+}
+
 export async function currentAccount(): Promise<string | null> {
   if (!window.ethereum) return null;
   const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];

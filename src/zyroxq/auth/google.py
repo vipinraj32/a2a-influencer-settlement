@@ -121,4 +121,8 @@ class GoogleOAuth:
             subscribers=int(stats.get("subscriberCount", 0)),
             thumbnail_url=(thumbs.get("medium") or thumbs.get("default") or {}).get("url", ""),
             verified_at=datetime.now(UTC),
+            # Missing statistics stay None (unknown), never 0
+            view_count=int(stats["viewCount"]) if "viewCount" in stats else None,
+            video_count=int(stats["videoCount"]) if "videoCount" in stats else None,
+            subscribers_hidden=bool(stats.get("hiddenSubscriberCount", False)),
         )

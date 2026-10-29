@@ -26,6 +26,9 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.sessions import SessionMiddleware
 from web3 import Web3
 
+from ..agent_policy import AdvertiserPolicy, InfluencerPolicy, creator_evidence
+from ..agent_policy import rules as pricing_rules
+from ..agent_policy.changes import material_changes
 from ..agents.advertiser.assistant import Assistant
 from ..agents.advertiser.runner import CampaignRunner
 from ..agents.influencer.hub import InfluencerHub
@@ -34,17 +37,20 @@ from ..auth.google import GoogleOAuth, OAuthError
 from ..auth.tokens import issue_user_token, read_user_token
 from ..auth.wallet_link import link_message
 from ..clock import Clock
+from ..compliance import DISCLAIMER, campaign_problems
 from ..config import Settings, get_settings
 from ..mcp_servers.server import build_mcp
-from ..models import Campaign, CampaignSpec, Deal, DealState, RateCard, User, new_id
+from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentScope, Deal, DealState, RateCard, User, new_id
 from ..services.context import AppContext, build_context, chat_model
-from ..services.deals import DealError, DealService
+from ..services.deals import ADVERTISER_PRIVATE_EVENTS, AUTH_EXPIRED, POLICY_KIND, DealError, DealService
 from ..verifier.youtube import parse_video_id
 from ..wallet.signer import recover_personal_sign
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"  # the built React app (web/ → npm run build)
 OPERATOR = "operator"  # read-only principal for the stdio MCP server
+MAX_REQUIREMENTS_CHARS = 15_000  # about three pages of brief
+SHORTS_MAX_SECONDS = 180
 
 
 class CampaignCreate(BaseModel):
@@ -55,16 +61,38 @@ class CampaignCreate(BaseModel):
     max_creators: int = Field(default=3, ge=1, le=10)
     min_subscribers: int = Field(default=0, ge=0)
     max_subscribers: int = Field(default=10_000_000, ge=1)
-    max_fixed: Decimal = Field(gt=0)
+    max_fixed: Decimal = Field(ge=0)
     max_cpm: Decimal = Field(ge=0)
     cap_per_creator: Decimal = Field(gt=0)
+    compensation_model: CompensationModel = "hybrid"
+    scope: ContentScope = Field(default_factory=ContentScope)
+    category: str = Field(default="", max_length=60)
+    jurisdictions: list[str] = Field(default_factory=lambda: ["IN", "US"], max_length=5)
+    max_rounds: int = Field(default=DEFAULT_MAX_ROUNDS, ge=1, le=8)
+    review_required: bool = False
+    required_tags: list[str] = Field(default_factory=lambda: ["#ad"], min_length=1, max_length=5)
     publish_within_days: int = Field(default=7, ge=1, le=60)
     brief: str = Field(default="", max_length=2000)
+    deliverable: Literal["youtube_short", "youtube_video"] = "youtube_short"
+    min_duration_seconds: int = Field(default=0, ge=0, le=4 * 3600)
+    max_duration_seconds: int = Field(default=0, ge=0, le=4 * 3600)  # 0 = no length rule
+    requirements: str = Field(default="", max_length=MAX_REQUIREMENTS_CHARS)
 
     @model_validator(mode="after")
     def bounds(self) -> CampaignCreate:
+        if self.max_duration_seconds and self.min_duration_seconds > self.max_duration_seconds:
+            raise ValueError("minimum video length cannot exceed the maximum")
+        if self.deliverable == "youtube_short" and self.max_duration_seconds > SHORTS_MAX_SECONDS:
+            raise ValueError(f"YouTube Shorts are at most {SHORTS_MAX_SECONDS} seconds")
         if self.max_fixed > self.cap_per_creator:
             raise ValueError("max_fixed cannot exceed cap_per_creator")
+        if self.compensation_model == "fixed" and (self.max_fixed <= 0 or self.max_cpm != 0):
+            raise ValueError("a fixed-fee campaign needs max_fixed > 0 and max_cpm = 0")
+        if self.compensation_model == "cpm" and (self.max_cpm <= 0 or self.max_fixed != 0):
+            raise ValueError("a CPM campaign needs max_cpm > 0 and max_fixed = 0")
+        if self.compensation_model == "hybrid" and self.max_fixed <= 0:
+            raise ValueError("a hybrid campaign needs max_fixed > 0")
+        self.jurisdictions = sorted({j.strip().upper() for j in self.jurisdictions})
         if self.cap_per_creator > self.budget:
             raise ValueError("cap_per_creator cannot exceed the budget")
         for v in (self.budget, self.max_fixed, self.max_cpm, self.cap_per_creator):
@@ -80,6 +108,17 @@ class Decision(BaseModel):
 
 class ProofIn(BaseModel):
     video_url: str = Field(max_length=300)
+    attestations: dict[str, bool] = Field(default_factory=dict, max_length=10)
+
+
+class PolicyIn(BaseModel):
+    policy: dict[str, Any]
+    confirm_material_change: bool = False
+
+
+class ReviewIn(BaseModel):
+    approved: bool
+    note: str = Field(default="", max_length=500)
 
 
 class DisputeIn(BaseModel):
@@ -225,7 +264,8 @@ def create_app(
     http = http_factory(app) if http_factory else httpx.AsyncClient(base_url=base, timeout=60)
     mcp = build_mcp(base, http=http, streamable_http_path="/", default_token=settings.mcp_api_token)
     app.state.mcp = mcp
-    state.hub = InfluencerHub(lambda i: state.ctx.registry.identity(i), lambda i: state.ctx.registry.agent_url(i), clock, llm)
+    state.hub = InfluencerHub(lambda i: state.ctx.registry.identity(i), lambda i: state.ctx.registry.agent_url(i), clock, llm,
+                              record=lambda r: state.deals.record_decision(r), resolve_disclosure=lambda i: state.ctx.disclosure.resolve(i))  # fmt: skip
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -354,6 +394,14 @@ def create_app(
         user.persona = body.persona.strip()
         user.agent_active = body.agent_active
         await state.ctx.store.save_user(user)
+        doc = await state.ctx.store.get_version(POLICY_KIND, user.id)
+        if doc and doc.get("role") == "influencer":  # the agent runs on the saved policy: carry the edited rates into a new version
+            policy = InfluencerPolicy.model_validate(doc)
+            policy.hard.min_fixed_fee, policy.hard.min_cpm = body.fixed_min, body.cpm_min
+            policy.preferences.preferred_fixed_fee, policy.persona = body.preferred_fixed, user.persona
+            if policy.preferences.preferred_cpm is not None and policy.preferences.preferred_cpm < body.cpm_min:
+                policy.preferences.preferred_cpm = body.cpm_min
+            await state.ctx.store.save_version(POLICY_KIND, user.id, policy.model_dump(mode="json", exclude={"version", "updated_at"}))
         return me_payload(user)
 
     @app.post("/api/me/wallet/challenge")
@@ -378,6 +426,21 @@ def create_app(
         await state.ctx.store.save_user(user)
         return me_payload(user)
 
+    @app.get("/api/me/wallet/balance")
+    async def wallet_balance(user: CurrentUser) -> dict[str, Any]:
+        """Advisory USDC balance of the linked wallet. It can change before settlement and decides nothing."""
+        if not user.wallet:
+            raise HTTPException(409, "link a wallet first")
+        ctx = state.ctx
+        out: dict[str, Any] = {"wallet": user.wallet, "token": ctx.token.coin, "token_address": ctx.token.contract_address,
+                               "chain_id": ctx.token.chain_id, "decimals": ctx.token.decimals, "checked_at": ctx.clock.now().isoformat(),
+                               "settlement_simulated": ctx.gateway.simulated}  # fmt: skip
+        try:
+            units = await asyncio.wait_for(asyncio.to_thread(ctx.balances.balance_of, user.wallet), 15)
+        except Exception as e:  # noqa: BLE001 - RPC down: the panel shows "unknown", signing is still allowed
+            return {**out, "balance": None, "units": None, "error": f"could not read the balance ({type(e).__name__})"}
+        return {**out, "balance": str(Decimal(units) / (Decimal(10) ** ctx.token.decimals)), "units": str(units), "error": None}
+
     # ---- platform ------------------------------------------------------------------
 
     @app.get("/api/status")
@@ -385,6 +448,8 @@ def create_app(
         ctx = state.ctx
         return {
             "settlement_mode": ctx.gateway.name,
+            "settlement_simulated": ctx.gateway.simulated or ctx.escrow.simulated,
+            "settlement_min_confirmations": settings.settlement_min_confirmations,
             "browser_signing": ctx.gateway.agent_signing,
             "escrow": {"address": ctx.escrow.address, "simulated": ctx.escrow.simulated, "chain_id": ctx.escrow.chain_id},
             "token": {"coin": ctx.token.coin, "network": ctx.token.network, "address": ctx.token.contract_address, "decimals": ctx.token.decimals},
@@ -422,7 +487,17 @@ def create_app(
     async def create_campaign(body: CampaignCreate, user: AdvertiserUser) -> dict[str, Any]:
         if not user.wallet:
             raise HTTPException(409, "link your wallet first: it signs the Payment Mandates")
-        campaign = await state.runner.start(CampaignSpec(**body.model_dump(), owner_id=user.id, payer=user.wallet))
+        # Disclosure gate: every jurisdiction needs a policy and a required tag that policy approves
+        policies = {j: state.ctx.disclosure.latest(j) for j in body.jurisdictions}
+        problems = campaign_problems(policies, body.required_tags)
+        if problems:
+            raise HTTPException(400, "; ".join(problems))
+        latest = await state.ctx.store.get_version(POLICY_KIND, user.id)
+        snapshot = {
+            "disclosure_policies": [p.id for p in policies.values() if p],
+            "agent_policy_version": latest["version"] if latest and latest.get("role") == "advertiser" else 0,
+        }
+        campaign = await state.runner.start(CampaignSpec(**body.model_dump(), **snapshot, owner_id=user.id, payer=user.wallet))
         return campaign.model_dump(mode="json")
 
     @app.post("/api/campaigns/parse-brief")
@@ -448,9 +523,29 @@ def create_app(
         if pending:
             for deal_id in pending["deals"]:
                 d = await state.deals.get(deal_id)
+                drafted = d.state == DealState.AWAITING_APPROVAL and state.ctx.gateway.agent_signing
+                problems = await state.deals.authorization_problems(d) if drafted else []
                 signing.append({"deal_id": d.id, "influencer_id": d.influencer_id, "amount": str(d.terms.cap) if d.terms else None,
-                                "typed_data": state.deals.typed_data(d), "payment_url": d.payment_url})  # fmt: skip
-        return {**c.model_dump(mode="json"), "pending_approval": pending, "signing_requests": signing}
+                                "state": d.state, "typed_data": state.deals.typed_data(d) if d.state == DealState.AWAITING_APPROVAL else None,
+                                "payment_url": d.payment_url, "problems": problems, "expired": AUTH_EXPIRED in problems,
+                                "valid_before": int(d.mandate_draft["validBefore"]) if d.mandate_draft else None})  # fmt: skip
+        funding = await state.deals.funding_summary(campaign_id)
+        return {**c.model_dump(mode="json"), "pending_approval": pending, "signing_requests": signing, "funding": funding}
+
+    @app.post("/api/campaigns/{campaign_id}/redraft")
+    async def redraft(campaign_id: str, user: AdvertiserUser) -> dict[str, Any]:
+        """Fresh authorizations (new expiry and nonce) for unsigned deals whose draft expired."""
+        await readable_campaign(campaign_id, user)
+        pending = await state.runner.pending_approval(campaign_id)
+        if pending is None:
+            raise HTTPException(409, "campaign is not waiting for approval")
+        redrafted = []
+        for deal_id in pending["deals"]:
+            d = await state.deals.get(deal_id)
+            if d.state == DealState.AWAITING_APPROVAL and AUTH_EXPIRED in await state.deals.authorization_problems(d):
+                await state.deals.redraft(d)
+                redrafted.append(deal_id)
+        return {"redrafted": redrafted}
 
     @app.get("/api/campaigns/{campaign_id}/deals")
     async def campaign_deals(campaign_id: str, who: Principal) -> list[dict[str, Any]]:
@@ -460,7 +555,8 @@ def create_app(
     @app.get("/api/campaigns/{campaign_id}/events")
     async def campaign_events(campaign_id: str, who: Principal) -> list[dict[str, Any]]:
         await readable_campaign(campaign_id, who)
-        return [e.model_dump(mode="json") for e in await state.ctx.store.list_events(campaign_id)]
+        events = await state.ctx.store.list_events(campaign_id)
+        return [e.model_dump(mode="json") for e in events if who == OPERATOR or e.kind != "influencer_decision"]
 
     @app.post("/api/campaigns/{campaign_id}/decision")
     async def decide(campaign_id: str, body: Decision, user: AdvertiserUser) -> dict[str, str]:
@@ -470,9 +566,17 @@ def create_app(
             raise HTTPException(409, "campaign is not waiting for approval")
         if body.approved and state.ctx.gateway.agent_signing:
             for deal_id in pending["deals"]:
+                deal = await state.deals.get(deal_id)
+                problems = await state.deals.authorization_problems(deal)
+                if problems == [AUTH_EXPIRED]:
+                    raise HTTPException(409, f"the authorization for {deal_id} expired: redraft and sign again")
+                if problems:
+                    raise HTTPException(400, f"{deal_id} cannot be paid: {'; '.join(problems)}")
                 sig = body.signatures.get(deal_id)
-                if sig is None or not state.deals.signature_valid(await state.deals.get(deal_id), sig):
+                if sig is None or not state.deals.signature_valid(deal, sig):
                     raise HTTPException(400, f"missing or invalid wallet signature for {deal_id}")
+        for deal_id in pending["deals"]:
+            await state.deals.record_approval(deal_id, "payment", user.id, body.approved)
         await state.runner.decide(campaign_id, body.approved, body.signatures)
         return {"status": "resumed"}
 
@@ -485,14 +589,129 @@ def create_app(
     @app.get("/api/deals/{deal_id}/events")
     async def deal_events(deal_id: str, who: Principal) -> list[dict[str, Any]]:
         deal = await readable_deal(deal_id, who)
-        return [e.model_dump(mode="json") for e in await state.ctx.store.list_events(deal.campaign_id, deal_id)]
+        events = await state.ctx.store.list_events(deal.campaign_id, deal_id)
+        if isinstance(who, User) and who.role == "influencer":  # the advertiser's limits and reasoning stay with the advertiser
+            events = [e for e in events if e.kind not in ADVERTISER_PRIVATE_EVENTS]
+        elif isinstance(who, User):
+            events = [e for e in events if e.kind != "influencer_decision"]
+        return [e.model_dump(mode="json") for e in events]
+
+    def party_of(who: User | str) -> str | None:
+        return None if who == OPERATOR else ("influencer" if isinstance(who, User) and who.role == "influencer" else "advertiser")
+
+    @app.get("/api/deals/{deal_id}/decisions")
+    async def deal_decisions(deal_id: str, who: Principal) -> list[dict[str, Any]]:
+        """Each party sees only its own agent's decision records (the operator sees both)."""
+        await readable_deal(deal_id, who)
+        return await state.ctx.store.list_decisions(deal_id, party_of(who))
+
+    @app.get("/api/deals/{deal_id}/negotiation")
+    async def deal_negotiation(deal_id: str, who: Principal) -> dict[str, Any]:
+        deal = await readable_deal(deal_id, who)
+        spec = (await state.deals.campaign(deal.campaign_id)).spec
+        return state.deals.negotiation_view(deal, spec)
+
+    @app.post("/api/deals/{deal_id}/compliance/review")
+    async def compliance_review(deal_id: str, body: ReviewIn, user: AdvertiserUser) -> dict[str, Any]:
+        await readable_deal(deal_id, user)
+        return (await state.deals.compliance_review(deal_id, user.id, body.approved, body.note)).model_dump(mode="json")
+
+    @app.get("/api/campaigns/{campaign_id}/compliance")
+    async def campaign_compliance(campaign_id: str, who: Principal) -> dict[str, Any]:
+        c = await readable_campaign(campaign_id, who)
+        return await state.deals.compliance_view(c.spec)
+
+    # ---- agent policies, evidence, disclosure, pricing ------------------------------------
+
+    def _parse_policy(user: User, data: dict[str, Any]) -> InfluencerPolicy | AdvertiserPolicy:
+        cls = InfluencerPolicy if user.role == "influencer" else AdvertiserPolicy
+        try:
+            return cls.model_validate({**data, "role": user.role, "version": 0, "updated_at": None})
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+    async def _current_policy(user: User) -> tuple[InfluencerPolicy | AdvertiserPolicy | None, bool]:
+        doc = await state.ctx.store.get_version(POLICY_KIND, user.id)
+        if doc and doc.get("role") == user.role:
+            return (InfluencerPolicy if user.role == "influencer" else AdvertiserPolicy).model_validate(doc), False
+        if user.role == "influencer":
+            return (InfluencerPolicy.from_rate_card(user.rate_card, user.persona) if user.rate_card else None), True
+        return AdvertiserPolicy(), True
+
+    @app.get("/api/me/agent-policy")
+    async def get_agent_policy(user: CurrentUser) -> dict[str, Any]:
+        policy, default = await _current_policy(user)
+        return {"policy": policy.model_dump(mode="json") if policy else None, "is_default": default}
+
+    @app.post("/api/me/agent-policy/validate")
+    async def validate_agent_policy(body: PolicyIn, user: CurrentUser) -> dict[str, Any]:
+        new = _parse_policy(user, body.policy)
+        old, default = await _current_policy(user)
+        return {"ok": True, "material_changes": [] if default else material_changes(old, new)}
+
+    @app.put("/api/me/agent-policy")
+    async def put_agent_policy(body: PolicyIn, user: CurrentUser) -> dict[str, Any]:
+        """Saves a new immutable version. Loosening a hard constraint needs `confirm_material_change`.
+        Running negotiations keep the version they started with."""
+        new = _parse_policy(user, body.policy)
+        old, default = await _current_policy(user)
+        changes = [] if default else material_changes(old, new)
+        if changes and not body.confirm_material_change:
+            raise HTTPException(409, {"message": "these changes loosen hard constraints: confirm to save", "material_changes": changes})
+        doc = await state.ctx.store.save_version(POLICY_KIND, user.id, new.model_dump(mode="json", exclude={"version", "updated_at"}))
+        if isinstance(new, InfluencerPolicy):  # keep the onboarding rate card in step with the policy
+            user.rate_card, user.persona = new.rate_card(), new.persona
+            await state.ctx.store.save_user(user)
+        return {"policy": doc, "is_default": False, "material_changes": changes}
+
+    @app.get("/api/me/agent-policy/versions")
+    async def agent_policy_versions(user: CurrentUser) -> list[dict[str, Any]]:
+        return list(reversed(await state.ctx.store.list_versions(POLICY_KIND, user.id)))
+
+    async def _evidence(user: User) -> list[dict[str, Any]]:
+        policy, _ = await _current_policy(user)
+        return [e.model_dump(mode="json") for e in creator_evidence(user, policy if isinstance(policy, InfluencerPolicy) else None)]
+
+    @app.get("/api/me/evidence")
+    async def my_evidence(user: InfluencerUser) -> list[dict[str, Any]]:
+        return await _evidence(user)
+
+    @app.get("/api/influencers/{influencer_id}/evidence")
+    async def influencer_evidence(influencer_id: str, _: CurrentUser) -> dict[str, Any]:
+        """What an advertiser may see: sourced metrics and the creator's public profile, never their limits."""
+        if await state.ctx.registry.get(influencer_id) is None:
+            raise HTTPException(404, "no listed influencer with this id")
+        creator = await state.ctx.store.get_user(influencer_id)
+        assert creator is not None
+        policy, _ = await _current_policy(creator)
+        public = policy.public_view() if isinstance(policy, InfluencerPolicy) else None
+        return {"evidence": await _evidence(creator), "profile": public}
+
+    @app.get("/api/disclosure-policies")
+    async def disclosure_policies(_: Principal) -> dict[str, Any]:
+        return {"policies": [p.model_dump(mode="json") for p in state.ctx.disclosure.all_latest()], "disclaimer": DISCLAIMER}
+
+    @app.put("/api/disclosure-policies/{jurisdiction}")
+    async def publish_disclosure_policy(jurisdiction: str, body: dict[str, Any], who: Principal) -> dict[str, Any]:
+        """Operator only. Publishes a new version; existing campaigns keep the version they snapshotted."""
+        if who != OPERATOR:
+            raise HTTPException(403, "only the operator can publish disclosure policies")
+        try:
+            policy = await state.ctx.disclosure.publish(jurisdiction.upper(), body)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        return policy.model_dump(mode="json")
+
+    @app.get("/api/pricing/rules")
+    async def pricing() -> dict[str, Any]:
+        return pricing_rules()
 
     @app.post("/api/deals/{deal_id}/proof")
     async def submit_proof(deal_id: str, body: ProofIn, user: InfluencerUser) -> dict[str, Any]:
         deal = await state.deals.get(deal_id)
         if deal.influencer_id != user.id:
             raise HTTPException(404, "deal not found")
-        return (await state.deals.submit_proof(deal_id, body.video_url)).model_dump(mode="json")
+        return (await state.deals.submit_proof(deal_id, body.video_url, body.attestations)).model_dump(mode="json")
 
     @app.post("/api/deals/{deal_id}/dispute")
     async def dispute(deal_id: str, body: DisputeIn, user: AdvertiserUser) -> dict[str, Any]:
@@ -518,7 +737,20 @@ def create_app(
             if d.influencer_id != user.id:
                 continue
             spec = (await state.deals.campaign(d.campaign_id)).spec
-            brand = spec.model_dump(mode="json", include={"advertiser", "brand_handle", "niche", "deliverable", "brief", "required_tags"})
+            brand = spec.model_dump(
+                mode="json",
+                include={
+                    "advertiser",
+                    "brand_handle",
+                    "niche",
+                    "deliverable",
+                    "brief",
+                    "required_tags",
+                    "requirements",
+                    "min_duration_seconds",
+                    "max_duration_seconds",
+                },
+            )
             out.append({**d.model_dump(mode="json"), "campaign": brand})
         return sorted(out, key=lambda d: d["updated_at"] or "", reverse=True)
 

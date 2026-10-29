@@ -77,3 +77,16 @@ async def test_advertiser_llm_in_bounds_counter_is_used(campaign, influencer, of
     llm = FakeLLM(AdvertiserDecision(action="counter", fixed_fee="23.50", cpm="2.50", reason="close the gap"))
     move = await next_move(campaign, influencer, offer, counter, llm)
     assert move.decided_by == "llm" and move.offer.fixed_fee == Decimal("23.50") and move.offer.round == 2
+
+
+async def test_influencer_rejects_a_brief_that_does_not_match_the_signed_hash(identity, offer):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from zyroxq.models import requirements_hash
+
+    graph = build_influencer_graph(identity, Clock(), None, InMemorySaver())
+    sent = offer.model_copy(update={"requirements_hash": requirements_hash("Show the product for 10 seconds")})
+    out = await graph.ainvoke({"offer": sent.model_dump(mode="json"), "requirements": "Swapped brief"}, {"configurable": {"thread_id": "x"}})
+    assert out["reply"]["kind"] == "reject"
+    out = await graph.ainvoke({"offer": sent.model_dump(mode="json"), "requirements": "Show the product for 10 seconds"}, {"configurable": {"thread_id": "y"}})
+    assert out["reply"]["kind"] == "accept" and out["reply"]["terms"]["requirements_hash"] == sent.requirements_hash
