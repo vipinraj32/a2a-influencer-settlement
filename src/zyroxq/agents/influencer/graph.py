@@ -93,7 +93,8 @@ def build_influencer_graph(
             d: InfluencerDecision = await llm.with_structured_output(InfluencerDecision, method="json_schema").ainvoke([
                 SystemMessage(
                     f"You negotiate sponsorships for the YouTube creator {me.profile.name} "
-                    f"({me.profile.subscribers:,} subscribers, niche: {me.profile.niche}). Style: {policy.persona or 'professional and fair'}. "
+                    f"({me.profile.subscribers:,} subscribers, niches: {', '.join(me.profile.all_niches)}). "
+                    f"Style: {policy.persona or 'professional and fair'}. "
                     f"Objective: {policy.objective.primary}. Private limits: at least ${h.min_fixed_fee} fixed and ${h.min_cpm} CPM; "
                     f"anchor ${policy.preferences.preferred_fixed_fee}. This is round {offer.round} of at most {offer.max_rounds}. "
                     "Your answer is checked by deterministic rules and your note is never shown to the advertiser. "

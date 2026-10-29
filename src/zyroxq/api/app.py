@@ -32,6 +32,7 @@ from ..agent_policy.changes import material_changes
 from ..agents.advertiser.assistant import Assistant
 from ..agents.advertiser.runner import CampaignRunner
 from ..agents.influencer.hub import InfluencerHub
+from ..agents.influencer.niche import NICHES, analyze_niches
 from ..auth.crypto import new_agent_key
 from ..auth.google import GoogleOAuth, OAuthError
 from ..auth.tokens import issue_user_token, read_user_token
@@ -43,11 +44,14 @@ from ..mcp_servers.server import build_mcp
 from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentScope, Deal, DealState, RateCard, User, new_id
 from ..services.context import AppContext, build_context, chat_model
 from ..services.deals import ADVERTISER_PRIVATE_EVENTS, AUTH_EXPIRED, POLICY_KIND, DealError, DealService
+from ..verifier.channels import summarize
 from ..verifier.youtube import parse_video_id
 from ..wallet.signer import recover_personal_sign
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"  # the built React app (web/ → npm run build)
+MAX_NICHES = 5
+NICHE_SAMPLE = 25  # recent uploads read for the niche analysis
 OPERATOR = "operator"  # read-only principal for the stdio MCP server
 MAX_REQUIREMENTS_CHARS = 15_000  # about three pages of brief
 SHORTS_MAX_SECONDS = 180
@@ -143,7 +147,8 @@ class AdvertiserProfileIn(BaseModel):
 
 
 class InfluencerProfileIn(BaseModel):
-    niche: str = Field(min_length=2, max_length=40)
+    niche: str = Field(default="", max_length=40)  # legacy single niche; `niches` wins when given
+    niches: list[str] = Field(default_factory=list, max_length=MAX_NICHES)  # primary first
     fixed_min: Decimal = Field(gt=0, le=100_000)
     cpm_min: Decimal = Field(ge=0, le=1_000)
     preferred_fixed: Decimal = Field(gt=0, le=100_000)
@@ -154,6 +159,12 @@ class InfluencerProfileIn(BaseModel):
     def anchor(self) -> InfluencerProfileIn:
         if self.preferred_fixed < self.fixed_min:
             raise ValueError("preferred_fixed must be at least fixed_min")
+        cleaned = list(dict.fromkeys(n.strip().lower() for n in (self.niches or [self.niche]) if n.strip()))
+        if not cleaned:
+            raise ValueError("choose at least one niche")
+        if any(not 2 <= len(n) <= 40 for n in cleaned):
+            raise ValueError("each niche must be 2 to 40 characters")
+        self.niches, self.niche = cleaned, cleaned[0]
         return self
 
 
@@ -366,6 +377,19 @@ def create_app(
 
     # ---- account + onboarding ---------------------------------------------------
 
+    def channels_online() -> Any:
+        if state.ctx.channels is None:
+            raise HTTPException(503, "YouTube lookups are offline: set YOUTUBE_API_KEY")
+        return state.ctx.channels
+
+    async def youtube_call(call: Any) -> Any:
+        try:
+            return await call
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(502, f"YouTube Data API returned {e.response.status_code}") from e
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"YouTube Data API unreachable: {type(e).__name__}") from e
+
     def me_payload(user: User) -> dict[str, Any]:
         out: dict[str, Any] = {"user": user.public()}
         if user.role == "influencer":
@@ -389,7 +413,9 @@ def create_app(
 
     @app.put("/api/me/influencer")
     async def update_influencer(body: InfluencerProfileIn, user: InfluencerUser) -> dict[str, Any]:
-        user.niche = body.niche.strip().lower()
+        user.niche, user.niches = body.niche, body.niches
+        suggested = {s.niche for s in user.niche_analysis.suggestions} if user.niche_analysis else set()
+        user.niche_source = "youtube_analysis" if suggested and set(body.niches) <= suggested else "manual"
         user.rate_card = RateCard(fixed_min=body.fixed_min, cpm_min=body.cpm_min, preferred_fixed=body.preferred_fixed)
         user.persona = body.persona.strip()
         user.agent_active = body.agent_active
@@ -403,6 +429,27 @@ def create_app(
                 policy.preferences.preferred_cpm = body.cpm_min
             await state.ctx.store.save_version(POLICY_KIND, user.id, policy.model_dump(mode="json", exclude={"version", "updated_at"}))
         return me_payload(user)
+
+    @app.get("/api/niches")
+    async def niches() -> dict[str, Any]:
+        """The taxonomy the channel analysis suggests from. Creators may also type their own niche."""
+        return {"niches": list(NICHES), "max_per_creator": MAX_NICHES}
+
+    @app.post("/api/me/niche-analysis")
+    async def analyze_my_niches(user: InfluencerUser) -> dict[str, Any]:
+        """Read the creator's public channel and recent uploads, suggest niches and keep the analysis on the account.
+        It changes nothing the agent uses: the creator saves the niches they choose with PUT /api/me/influencer."""
+        if user.channel is None:
+            raise HTTPException(409, "connect your YouTube channel first")
+        source = channels_online()
+        details = await youtube_call(source.channel(user.channel.channel_id))
+        if details is None:
+            raise HTTPException(404, "YouTube returned no channel for your account")
+        recent = await youtube_call(source.recent_videos(details.channel_id, NICHE_SAMPLE))
+        analysis = await analyze_niches(details, recent, state.ctx.clock.now(), state.ctx.llm)
+        user.niche_analysis = analysis
+        await state.ctx.store.save_user(user)
+        return analysis.model_dump(mode="json")
 
     @app.post("/api/me/wallet/challenge")
     async def wallet_challenge(request: Request, body: WalletChallengeIn, user: CurrentUser) -> dict[str, str]:
@@ -475,7 +522,7 @@ def create_app(
         """Directory of live influencer agents. Rate-card floors stay private to each agent."""
         return [
             {
-                **reg.profile.model_dump(mode="json", include={"id", "name", "channel_id", "subscribers", "niche", "wallet", "avatar_url"}),
+                **reg.profile.model_dump(mode="json", include={"id", "name", "channel_id", "subscribers", "niche", "niches", "wallet", "avatar_url"}),
                 "agent_url": reg.agent_url,
             }  # fmt: skip
             for reg in await state.ctx.registry.all()
@@ -717,6 +764,127 @@ def create_app(
     async def dispute(deal_id: str, body: DisputeIn, user: AdvertiserUser) -> dict[str, Any]:
         await readable_deal(deal_id, user)
         return (await state.deals.dispute(deal_id, body.reason)).model_dump(mode="json")
+
+    # ---- creator profiles and public YouTube data (read-only; also behind the MCP tools) -----
+
+    async def _deal_summaries(influencer_id: str, who: User | str) -> list[dict[str, Any]]:
+        """The caller's own deals with this creator (every deal for the operator or the creator)."""
+        campaigns = {c.spec.id: c for c in await state.ctx.store.list_campaigns()}
+        out = []
+        for d in await state.ctx.store.list_deals():
+            c = campaigns.get(d.campaign_id)
+            if d.influencer_id != influencer_id or c is None:
+                continue
+            if not (who == OPERATOR or (isinstance(who, User) and who.id in (c.spec.owner_id, influencer_id))):
+                continue
+            paid = sum((p.amount for p in d.payouts if p.kind != "refund"), Decimal(0))
+            terms = d.terms.model_dump(mode="json", include={"compensation_model", "fixed_fee", "cpm", "cap", "publish_by"}) if d.terms else None
+            out.append({
+                "deal_id": d.id,
+                "campaign_id": c.spec.id,
+                "campaign": f"{c.spec.advertiser} · {c.spec.niche}",
+                "state": d.state,
+                "terms": terms,
+                "video_id": d.proof.video_id if d.proof else None,
+                "views": d.proof.views if d.proof else None,
+                "paid": str(paid),
+                "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+            })  # fmt: skip
+        return out
+
+    @app.get("/api/influencers/{influencer_id}/profile")
+    async def influencer_profile(influencer_id: str, who: Principal, videos: int = 12) -> dict[str, Any]:
+        """Everything an advertiser may know about a creator: public profile, the channel proved at sign-in,
+        sourced evidence, live YouTube statistics and recent uploads, and the caller's own deals with them.
+        Never the creator's floors, weights or private notes."""
+        creator = await state.ctx.store.get_user(influencer_id)
+        if creator is None or creator.role != "influencer":
+            raise HTTPException(404, "no influencer with this id")
+        reg = await state.ctx.registry.get(influencer_id)
+        deals = await _deal_summaries(influencer_id, who)
+        is_self = isinstance(who, User) and who.id == influencer_id
+        if reg is None and not deals and not is_self and who != OPERATOR:
+            raise HTTPException(404, "no listed influencer with this id")
+        policy, _ = await _current_policy(creator)
+        ch = creator.channel
+        live: dict[str, Any] = {"available": False, "error": None, "channel": None, "recent_videos": [], "engagement": None}
+        if ch is None:
+            live["error"] = "no YouTube channel connected"
+        elif state.ctx.channels is None:
+            live["error"] = "YouTube lookups are offline: set YOUTUBE_API_KEY"
+        else:
+            try:
+                details = await state.ctx.channels.channel(ch.channel_id)
+                recent = await state.ctx.channels.recent_videos(ch.channel_id, max(1, min(videos, 50))) if details else []
+            except httpx.HTTPError as e:
+                status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+                live["error"] = f"YouTube Data API error ({status})"
+            else:
+                live.update(
+                    available=details is not None,
+                    error=None if details else "YouTube returned no channel for this id",
+                    channel=details.model_dump(mode="json") if details else None,
+                    recent_videos=[v.model_dump(mode="json") for v in recent],
+                    engagement=summarize(recent).model_dump(mode="json") if recent else None,
+                )
+        return {
+            "influencer": {
+                "id": creator.id,
+                "name": ch.title if ch else creator.name,
+                "avatar_url": ch.thumbnail_url if ch else creator.picture,
+                "niche": creator.niche,
+                "niches": creator.niches or ([creator.niche] if creator.niche else []),
+                "niche_source": creator.niche_source,
+                "niche_analysis": creator.niche_analysis.model_dump(mode="json") if creator.niche_analysis else None,
+                "wallet": creator.wallet,
+                "agent_signer": creator.agent_signer,
+                "agent_active": creator.agent_active,
+                "listed": reg is not None,
+                "agent_url": reg.agent_url if reg else None,
+                "member_since": creator.created_at.isoformat(),
+            },
+            "verified_channel": ch.model_dump(mode="json") if ch else None,
+            "public_profile": policy.public_view() if isinstance(policy, InfluencerPolicy) else None,
+            "evidence": await _evidence(creator),
+            "youtube": live,
+            "deals": deals,
+        }
+
+    @app.get("/api/channels/{channel}")
+    async def channel_details(channel: str, _: Principal) -> dict[str, Any]:
+        """Any public channel by id, @handle or URL."""
+        details = await youtube_call(channels_online().channel(channel))
+        if details is None:
+            raise HTTPException(404, "channel not found")
+        return details.model_dump(mode="json")
+
+    @app.get("/api/channels/{channel}/videos")
+    async def channel_videos(channel: str, _: Principal, limit: int = 12) -> dict[str, Any]:
+        """Latest uploads with statistics, newest first, plus a derived engagement summary."""
+        source = channels_online()
+        details = await youtube_call(source.channel(channel))
+        if details is None:
+            raise HTTPException(404, "channel not found")
+        recent = await youtube_call(source.recent_videos(details.channel_id, max(1, min(limit, 50))))
+        videos = [v.model_dump(mode="json") for v in recent]
+        return {"channel_id": details.channel_id, "videos": videos, "engagement": summarize(recent).model_dump(mode="json")}
+
+    @app.get("/api/videos/{video}/stats")
+    async def video_stats(video: str, _: Principal) -> dict[str, Any]:
+        """Views, likes, comments and engagement rate of one video (None where YouTube hides them)."""
+        video_id = parse_video_id(video)
+        found = await youtube_call(channels_online().videos([video_id])) if video_id else []
+        if not found:
+            raise HTTPException(404, "video not found")
+        return found[0].model_dump(mode="json")
+
+    @app.get("/api/videos/{video}/comments")
+    async def video_comments(video: str, _: Principal, limit: int = 20) -> dict[str, Any]:
+        """Top-level comments by relevance; `enabled` is false when the creator turned comments off."""
+        video_id = parse_video_id(video)
+        if video_id is None:
+            raise HTTPException(404, "video not found")
+        return (await youtube_call(channels_online().comments(video_id, max(1, min(limit, 100))))).model_dump(mode="json")
 
     @app.get("/api/videos/{video}")
     async def video(video: str, _: Principal) -> dict[str, Any]:

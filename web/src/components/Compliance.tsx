@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { CreatorLink } from "./CreatorLink";
 import { humanize, when } from "../format";
 import { useLiveEvents, useResource } from "../live";
 import { ActionButton, Card, Empty, Notice, StateBadge } from "./ui";
@@ -51,7 +52,9 @@ export function ComplianceCard({ campaignId, names }: { campaignId: string; name
           <tbody>
             {v.deals.map((d) => (
               <tr key={d.deal_id}>
-                <td>{names.get(d.influencer_id) ?? d.influencer_id}</td>
+                <td>
+                  <CreatorLink id={d.influencer_id}>{names.get(d.influencer_id) ?? d.influencer_id}</CreatorLink>
+                </td>
                 <td>
                   <StateBadge state={d.state} />
                 </td>

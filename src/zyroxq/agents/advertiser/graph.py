@@ -51,7 +51,7 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         registry = await ctx.registry.all()
         for reg in registry:
             p, inf_id = reg.profile, reg.profile.id
-            if p.niche.lower() != spec.niche.lower() or not (spec.min_subscribers <= p.subscribers <= spec.max_subscribers):
+            if spec.niche.lower() not in p.all_niches or not (spec.min_subscribers <= p.subscribers <= spec.max_subscribers):
                 continue
             try:
                 card = await ctx.a2a.fetch_card(reg.agent_url)

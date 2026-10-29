@@ -1,4 +1,5 @@
 import { api } from "../../api";
+import { CreatorLink } from "../../components/CreatorLink";
 import { Avatar, Card, Empty, ErrorText, Spinner } from "../../components/ui";
 import { num, short } from "../../format";
 import { useResource } from "../../live";
@@ -25,7 +26,7 @@ export function Creators() {
             <thead>
               <tr>
                 <th>Creator</th>
-                <th>Niche</th>
+                <th>Niches</th>
                 <th>Subscribers</th>
                 <th>Payout wallet</th>
                 <th>Agent Card</th>
@@ -38,12 +39,12 @@ export function Creators() {
                     <span className="who-cell">
                       <Avatar src={d.avatar_url} name={d.name} size={28} />
                       <span>
-                        {d.name}
+                        <CreatorLink id={d.id}>{d.name}</CreatorLink>
                         <div className="muted small mono">{d.channel_id}</div>
                       </span>
                     </span>
                   </td>
-                  <td>{d.niche}</td>
+                  <td>{(d.niches?.length ? d.niches : [d.niche]).join(", ")}</td>
                   <td>{num(d.subscribers)}</td>
                   <td className="mono">{short(d.wallet)}</td>
                   <td>

@@ -312,7 +312,7 @@ def screen_creator(spec: CampaignSpec, policy: AdvertiserPolicy, creator: Influe
         CheckResult(name="verified_channel", passed=bool(creator.channel_id) or not h.require_verified_channel, detail="OAuth-verified channel"),
         CheckResult(name="min_verified_subscribers", passed=creator.subscribers >= h.min_verified_subscribers,
                     detail=f"{creator.subscribers} vs {h.min_verified_subscribers} (YouTube Data API)"),
-        CheckResult(name="niche_allowed", passed=creator.niche.lower() not in blocked, detail=creator.niche),
+        CheckResult(name="niche_allowed", passed=not blocked.intersection(creator.all_niches), detail=", ".join(creator.all_niches)),
     ]  # fmt: skip
 
 
@@ -350,7 +350,7 @@ def _advertiser_scores(spec: CampaignSpec, creator: InfluencerProfile, candidate
     in_band = spec.min_subscribers <= creator.subscribers <= spec.max_subscribers
     return {
         "minimize_cost": round(max(0.0, cost), 4),
-        "audience_relevance": 1.0 if creator.niche.lower() == spec.niche.lower() else 0.0,
+        "audience_relevance": 1.0 if creator.all_niches[:1] == [spec.niche.lower()] else 0.5 if spec.niche.lower() in creator.all_niches else 0.0,
         "maximize_reach": 1.0 if in_band else 0.0,
         "maximize_roi": round(max(0.0, cost), 4),  # no verified view forecast exists: ROI falls back to cost
         "evidence_quality": 1.0 if creator.channel_id else 0.0,  # subscribers + channel come from the YouTube Data API

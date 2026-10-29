@@ -7,6 +7,7 @@ import { AdvertiserHome } from "./pages/advertiser/AdvertiserHome";
 import { AgentProfile } from "./pages/advertiser/AgentProfile";
 import { CampaignView } from "./pages/advertiser/CampaignView";
 import { Creators } from "./pages/advertiser/Creators";
+import { CreatorProfile } from "./pages/CreatorProfile";
 import { NewCampaign } from "./pages/advertiser/NewCampaign";
 import { AgentPage } from "./pages/influencer/AgentPage";
 import { InfluencerHome } from "./pages/influencer/InfluencerHome";
@@ -58,6 +59,7 @@ const router = createBrowserRouter([
       { path: "/advertiser", element: <AdvertiserHome /> },
       { path: "/advertiser/new", element: <NewCampaign /> },
       { path: "/advertiser/creators", element: <Creators /> },
+      { path: "/advertiser/creators/:id", element: <CreatorProfile /> },
       { path: "/advertiser/agent", element: <AgentProfile /> },
       { path: "/advertiser/campaigns/:id", element: <CampaignView /> },
     ],
@@ -71,6 +73,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/influencer", element: <InfluencerHome /> },
       { path: "/influencer/agent", element: <AgentPage /> },
+      { path: "/influencer/profile", element: <CreatorProfile /> },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },

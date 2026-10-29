@@ -5,6 +5,7 @@ import { ComplianceCard, ReviewForm } from "../../components/Compliance";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
+import { CreatorLink } from "../../components/CreatorLink";
 import { ActionButton, Address, Avatar, CampaignBadge, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
 import { MODEL_LABEL, short, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
@@ -183,7 +184,9 @@ function SigningPanel({ campaign, names, onDone }: { campaign: CampaignDetail; n
         <tbody>
           {requests.map((r) => (
             <tr key={r.deal_id}>
-              <td>{names.get(r.influencer_id) ?? r.influencer_id}</td>
+              <td>
+                <CreatorLink id={r.influencer_id}>{names.get(r.influencer_id) ?? r.influencer_id}</CreatorLink>
+              </td>
               <td>
                 {usd(r.amount)} {status?.token.coin}
               </td>
@@ -357,7 +360,7 @@ export function CampaignView() {
                     <td>
                       <span className="who-cell">
                         <Avatar src={avatars.get(d.influencer_id)} name={names.get(d.influencer_id) ?? d.influencer_id} size={24} />
-                        {names.get(d.influencer_id) ?? d.influencer_id}
+                        <CreatorLink id={d.influencer_id}>{names.get(d.influencer_id) ?? d.influencer_id}</CreatorLink>
                       </span>
                     </td>
                     <td>
@@ -377,7 +380,12 @@ export function CampaignView() {
         {deal ? (
           <DealDetail
             deal={deal}
-            title={names.get(deal.influencer_id) ?? deal.influencer_id}
+            title={
+              <span>
+                <CreatorLink id={deal.influencer_id}>{names.get(deal.influencer_id) ?? deal.influencer_id}</CreatorLink>{" "}
+                <span className="muted small mono">{deal.influencer_id}</span>
+              </span>
+            }
             actions={
               <>
                 {deal.state === "AWAITING_CHECKOUT" && deal.payment_url && (

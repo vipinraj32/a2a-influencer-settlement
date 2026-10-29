@@ -1,22 +1,4 @@
-import type {
-  AuditEvent,
-  Campaign,
-  CampaignDetail,
-  CampaignInput,
-  Deal,
-  DirectoryEntry,
-  InfluencerDeal,
-  AgentPolicy,
-  ComplianceView,
-  DecisionRecord,
-  DisclosurePolicy,
-  EvidenceItem,
-  Me,
-  NegotiationView,
-  PlatformStatus,
-  PolicyResponse,
-  WalletBalance,
-} from "./types";
+import type { AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -70,9 +52,11 @@ export const api = {
   linkWallet: (signature: string) => post<Me>("/api/me/wallet", { signature }),
   walletBalance: () => get<WalletBalance>("/api/me/wallet/balance"),
   saveAdvertiser: (company: string, brand_handle: string) => put<Me>("/api/me/advertiser", { company, brand_handle }),
-  saveInfluencer: (body: { niche: string; fixed_min: string; cpm_min: string; preferred_fixed: string; persona: string; agent_active: boolean }) =>
+  saveInfluencer: (body: { niches: string[]; fixed_min: string; cpm_min: string; preferred_fixed: string; persona: string; agent_active: boolean }) =>
     put<Me>("/api/me/influencer", body),
 
+  niches: () => get<{ niches: string[]; max_per_creator: number }>("/api/niches"),
+  analyzeNiches: () => post<NicheAnalysis>("/api/me/niche-analysis", {}),
   directory: () => get<DirectoryEntry[]>("/api/influencers"),
 
   campaigns: () => get<Campaign[]>("/api/campaigns"),
@@ -101,6 +85,7 @@ export const api = {
   myEvidence: () => get<EvidenceItem[]>("/api/me/evidence"),
   creatorEvidence: (id: string) =>
     get<{ evidence: EvidenceItem[]; profile: Record<string, unknown> | null }>(`/api/influencers/${encodeURIComponent(id)}/evidence`),
+  creatorProfile: (id: string, videos = 12) => get<CreatorProfileView>(`/api/influencers/${encodeURIComponent(id)}/profile?videos=${videos}`),
   disclosurePolicies: () => get<{ policies: DisclosurePolicy[]; disclaimer: string }>("/api/disclosure-policies"),
   dispute: (id: string, reason: string) => post<Deal>(`/api/deals/${encodeURIComponent(id)}/dispute`, { reason }),
 

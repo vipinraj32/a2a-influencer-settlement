@@ -40,7 +40,8 @@ class InfluencerProfile(BaseModel):
     platform: Literal["youtube"] = "youtube"
     channel_id: str  # OAuth-verified at onboarding
     subscribers: int
-    niche: str
+    niche: str  # primary niche
+    niches: list[str] = Field(default_factory=list)  # every niche the creator confirmed, primary first
     wallet: str  # payout address, proven by a wallet signature
     # Private to the creator's own agent. The directory the advertiser side reads strips it (registry.public_profile).
     rate_card: RateCard | None = None
@@ -50,6 +51,10 @@ class InfluencerProfile(BaseModel):
     delegation: str = ""
     delegation_signature: str = ""
     avatar_url: str = ""
+
+    @property
+    def all_niches(self) -> list[str]:
+        return [n.lower() for n in (self.niches or [self.niche])]
 
 
 class ChannelInfo(BaseModel):
@@ -62,6 +67,29 @@ class ChannelInfo(BaseModel):
     view_count: int | None = None
     video_count: int | None = None
     subscribers_hidden: bool = False  # the creator hides the subscriber count: treat it as unknown
+
+
+class NicheSuggestion(BaseModel):
+    niche: str
+    score: float  # 0.8 × share of recent uploads matching + 0.2 when the channel's topics/keywords match
+    video_share: float
+    matched_videos: int
+    keywords: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)  # titles of matching uploads
+    channel_signal: bool = False
+    llm_confidence: float | None = None  # set when an LLM ranked it (from the same fixed taxonomy)
+    reason: str = ""
+
+
+class NicheAnalysis(BaseModel):
+    """A suggestion derived from public YouTube data. The creator confirms or edits it; it is never applied silently."""
+
+    channel_id: str
+    analyzed_at: datetime
+    videos_analyzed: int
+    method: Literal["rules", "llm+rules"]
+    suggestions: list[NicheSuggestion] = Field(default_factory=list)
+    note: str = ""
 
 
 class User(BaseModel):
@@ -79,7 +107,10 @@ class User(BaseModel):
     brand_handle: str = ""
     # influencer
     channel: ChannelInfo | None = None
-    niche: str = ""
+    niche: str = ""  # primary niche (= niches[0])
+    niches: list[str] = Field(default_factory=list)
+    niche_source: Literal["", "youtube_analysis", "manual"] = ""  # analysis = the creator kept only suggested niches
+    niche_analysis: NicheAnalysis | None = None
     rate_card: RateCard | None = None
     persona: str = ""
     agent_active: bool = False
@@ -101,6 +132,7 @@ class User(BaseModel):
             channel_id=self.channel.channel_id,
             subscribers=self.channel.subscribers,
             niche=self.niche,
+            niches=self.niches or [self.niche],
             wallet=self.wallet,
             rate_card=self.rate_card,
             agent_signer=self.agent_signer,

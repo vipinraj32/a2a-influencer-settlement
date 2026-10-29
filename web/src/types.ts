@@ -31,6 +31,9 @@ export interface User {
   brand_handle: string;
   channel: ChannelInfo | null;
   niche: string;
+  niches: string[];
+  niche_source: "" | "youtube_analysis" | "manual";
+  niche_analysis: NicheAnalysis | null;
   rate_card: RateCard | null;
   persona: string;
   agent_active: boolean;
@@ -78,9 +81,31 @@ export interface DirectoryEntry {
   channel_id: string;
   subscribers: number;
   niche: string;
+  niches: string[];
   wallet: string;
   avatar_url: string;
   agent_url: string;
+}
+
+export interface NicheSuggestion {
+  niche: string;
+  score: number;
+  video_share: number;
+  matched_videos: number;
+  keywords: string[];
+  examples: string[];
+  channel_signal: boolean;
+  llm_confidence: number | null;
+  reason: string;
+}
+
+export interface NicheAnalysis {
+  channel_id: string;
+  analyzed_at: string;
+  videos_analyzed: number;
+  method: "rules" | "llm+rules";
+  suggestions: NicheSuggestion[];
+  note: string;
 }
 
 export interface CampaignSpec {
@@ -566,5 +591,87 @@ export interface ComplianceView {
     terms_hash_matches_approval: boolean;
     gates: string[];
     funding_simulated: boolean;
+  }[];
+}
+
+export interface ChannelDetails {
+  channel_id: string;
+  title: string;
+  handle: string;
+  description: string;
+  country: string | null;
+  published_at: string | null;
+  thumbnail_url: string;
+  banner_url: string;
+  subscribers: number | null;
+  total_views: number | null;
+  video_count: number | null;
+  topics: string[];
+  keywords: string;
+  observed_at: string;
+  url: string;
+}
+
+export interface VideoStats {
+  video_id: string;
+  title: string;
+  published_at: string;
+  thumbnail_url: string;
+  duration_seconds: number | null;
+  privacy_status: string;
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  engagement_rate: number | null;
+  observed_at: string;
+  url: string;
+}
+
+export interface EngagementSummary {
+  sample_size: number;
+  median_views: number | null;
+  mean_views: number | null;
+  mean_engagement_rate: number | null;
+  engagement_sample: number;
+  uploads_per_week: number | null;
+  window_days: number | null;
+  limitations: string;
+}
+
+export interface CreatorProfileView {
+  influencer: {
+    id: string;
+    name: string;
+    avatar_url: string;
+    niche: string;
+    niches: string[];
+    niche_source: string;
+    niche_analysis: NicheAnalysis | null;
+    wallet: string;
+    agent_signer: string;
+    agent_active: boolean;
+    listed: boolean;
+    agent_url: string | null;
+    member_since: string;
+  };
+  verified_channel: { channel_id: string; title: string; subscribers: number; subscribers_hidden: boolean; verified_at: string } | null;
+  public_profile: {
+    accepted_models: string[];
+    creator: { audience_countries: string[]; content_languages: string[]; bio: string };
+    disclosure_label: string;
+    source: string;
+  } | null;
+  evidence: EvidenceItem[];
+  youtube: { available: boolean; error: string | null; channel: ChannelDetails | null; recent_videos: VideoStats[]; engagement: EngagementSummary | null };
+  deals: {
+    deal_id: string;
+    campaign_id: string;
+    campaign: string;
+    state: DealState;
+    terms: { compensation_model: string; fixed_fee: string; cpm: string; cap: string; publish_by: string } | null;
+    video_id: string | null;
+    views: number | null;
+    paid: string;
+    updated_at: string | null;
   }[];
 }

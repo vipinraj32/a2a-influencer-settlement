@@ -88,7 +88,7 @@ export function InfluencerHome() {
           <div>
             <h1>{user.channel?.title}</h1>
             <p className="muted small">
-              {num(user.channel?.subscribers)} subscribers · {user.niche} ·{" "}
+              {num(user.channel?.subscribers)} subscribers · {(user.niches?.length ? user.niches : [user.niche]).join(", ")} ·{" "}
               {me.agent_listed ? <span className="chip good">agent live</span> : <span className="chip warn">agent paused</span>}
             </p>
           </div>

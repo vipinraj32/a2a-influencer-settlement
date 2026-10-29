@@ -154,7 +154,7 @@ changed them. At proof time the verifier reads the real duration from YouTube `c
 ### Phase 2: Discovery (A2A)
 ```
 [discover] → fetch Influencer Agent Cards from the registry
-           → filter by niche, verified subscribers, rate card  (code, not LLM)
+           → filter by niche (any of the creator's), verified subscribers, rate card  (code, not LLM)
            → shortlist N influencers
 ```
 
@@ -329,6 +329,20 @@ payment authorization is drafted for that hash (`approved_terms_hash`), approval
 | `GET /api/disclosure-policies`, `PUT /api/disclosure-policies/{jurisdiction}` | policies (operator publishes) |
 | `GET /api/pricing/rules` | formulas, version, worked example |
 
+### Creator niches: suggested from the channel, confirmed by the creator
+
+During onboarding the creator does not have to type a niche. `POST /api/me/niche-analysis` reads the public
+channel and its latest 25 uploads (YouTube Data API) and scores each niche of a fixed taxonomy (`GET /api/niches`):
+80% the share of uploads whose title, tags or description start match the niche's keywords, 20% the channel's
+YouTube topics and keywords (`agents/influencer/niche.py`). With an LLM configured it may re-rank, but only within
+the taxonomy, and every pick still carries the matched uploads and keywords. The analysis changes nothing on its
+own: the creator keeps, removes, reorders or adds niches (up to 5, own wording allowed) and saves them with
+`PUT /api/me/influencer` (`niches`, primary first). Later edits work the same way from **My agent**.
+A campaign reaches a creator when its niche is any of theirs; the primary niche counts as the full fit
+(`audience_relevance` 1.0, secondary 0.5, niche-fit premium on the primary only), and an advertiser's blocked
+niches block a creator who has any of them. `niche_source` records whether the saved niches came only from the
+suggestion or were edited by hand.
+
 ## MCP server (what the LLM is allowed to touch)
 
 One read-only `zyroxq` MCP server, embedded at `/mcp/` (streamable HTTP) and runnable over stdio (`uv run zyroxq mcp`):
@@ -341,6 +355,18 @@ One read-only `zyroxq` MCP server, embedded at `/mcp/` (streamable HTTP) and run
 | `get_deal_timeline` | Audit log of one deal |
 | `campaign_spend` | Locked via HSP, paid to creators, refunded, still in escrow |
 | `get_video_stats` | A YouTube video as the verifier sees it |
+| `list_influencers` | Listed creator agents: id, channel, niche, payout wallet, A2A URL |
+| `get_influencer_profile` | One creator: public profile, sign-in channel, sourced evidence, live channel stats, recent uploads, engagement summary, the caller's own deals |
+| `get_channel_details` | Any public channel by id, `@handle` or URL: subscribers (None if hidden), views, videos, country, topics |
+| `get_channel_videos` | Latest uploads with views, likes, comments, engagement rate; median/mean views and upload cadence |
+| `analyze_video_engagement` | Likes, comments and engagement per view for one video |
+| `get_video_comments` | Top comments by relevance (`enabled: false` when comments are off) |
+
+YouTube tools use the server's `YOUTUBE_API_KEY` (public data only, 1-unit `list` calls, cached for 10 minutes;
+recent uploads come from the uploads playlist, not the 100-unit `search`). Hidden statistics stay `None`. The same
+data backs the creator profile page (`GET /api/influencers/{id}/profile`): advertisers open it by clicking a creator in
+the directory, a campaign's deals, the signing panel or the compliance table, and creators see it under **My profile**.
+An advertiser sees only their own deals with the creator; floors and the creator's policy never appear.
 
 Signing, creating orders and releasing funds are deliberately **not** tools. They are fixed graph nodes that run only after the policy engine passes.
 
@@ -439,7 +465,7 @@ src/zyroxq/
   chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
   chain/settlement.py  settlement evidence: receipt → Transfer(payer → escrow, exact amount); simulated twin
   chain/balances.py    advisory USDC balance reads for the signing panel
-  verifier/            youtube (Data API; fixture source for tests) · verify (checks) · attest (signed releases)
+  verifier/            youtube (Data API; fixture source for tests) · channels (channel stats, uploads, comments) · verify (checks) · attest (signed releases)
   auth/                Google OAuth + YouTube channel proof · wallet-link messages · agent-key encryption · API tokens
   agents/influencer/   LangGraph negotiation graph + A2A server + hub (one agent per onboarded creator)
   agents/advertiser/   LangGraph campaign graph · negotiation moves · runner · MCP assistant

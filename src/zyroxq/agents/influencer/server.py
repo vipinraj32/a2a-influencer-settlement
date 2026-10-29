@@ -29,7 +29,7 @@ def agent_card(me: InfluencerIdentity, url: str) -> AgentCard:
     p = me.profile
     return AgentCard(
         name=f"{p.name} — sponsorship agent",
-        description=f"Negotiates paid YouTube Shorts for {p.name} ({p.subscribers:,} subs, {p.niche}). "
+        description=f"Negotiates paid YouTube Shorts for {p.name} ({p.subscribers:,} subs, {', '.join(p.all_niches)}). "
         f"Signs deal terms with agent key {p.agent_signer}; payee {p.wallet}.",
         version="0.1.0",
         supported_interfaces=[AgentInterface(url=url, protocol_binding="JSONRPC", protocol_version="1.0")],
@@ -42,7 +42,7 @@ def agent_card(me: InfluencerIdentity, url: str) -> AgentCard:
                 id=NEGOTIATE_SKILL,
                 name="Negotiate sponsorship",
                 description="Accepts an Offer; replies counter / accept (with EIP-191 signed DealTerms) / reject / clarify / escalate.",
-                tags=[p.niche, "youtube_short", f"channel:{p.channel_id}"],
+                tags=[*p.all_niches, "youtube_short", f"channel:{p.channel_id}"],
             ),
             AgentSkill(id="settlement-updates", name="Settlement updates", description="Receives funded / payout notices.", tags=["hsp"]),
         ],

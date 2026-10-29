@@ -25,6 +25,7 @@ from ..hsp.client import HspClient
 from ..hsp.networks import TokenInfo, find_token
 from ..store import MemoryStore, PostgresStore, Store
 from ..verifier.attest import Attestor
+from ..verifier.channels import ChannelSource, YouTubeChannelApi
 from ..verifier.youtube import VideoSource, YouTubeDataApi
 from ..wallet.gateway import Gateway, HostedGateway, SimulatedGateway
 from .events import EventBus
@@ -47,6 +48,7 @@ class AppContext:
     llm: BaseChatModel | None
     registry: InfluencerRegistry
     disclosure: DisclosureRegistry  # versioned sponsorship-disclosure policies
+    channels: ChannelSource | None = None  # public channel stats and uploads for creator profiles (YOUTUBE_API_KEY)
     bus: EventBus = field(default_factory=EventBus)
     warnings: list[str] = field(default_factory=list)
 
@@ -126,8 +128,10 @@ async def build_context(
         warnings.append("SETTLEMENT_MODE=simulated: HSP, escrow, payouts and refunds are emulated in-process; no real USDC moves")
 
     videos: VideoSource | None = None
+    channels: ChannelSource | None = None
     if settings.youtube_api_key:
         videos = YouTubeDataApi(settings.youtube_api_key)
+        channels = YouTubeChannelApi(settings.youtube_api_key, now=clock.now)
     else:
         warnings.append("YOUTUBE_API_KEY not set: video proofs cannot be verified")
     if not (settings.google_oauth_client_id and settings.google_oauth_client_secret):
@@ -148,6 +152,7 @@ async def build_context(
         llm=llm if llm is not None else chat_model(settings),
         registry=InfluencerRegistry(store, settings.public_base_url, secret),
         disclosure=DisclosureRegistry(store),
+        channels=channels,
         warnings=warnings,
     )
     await ctx.disclosure.load()

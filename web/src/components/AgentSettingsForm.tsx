@@ -1,13 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
 import { useSession } from "../session";
+import { NichePicker } from "./NichePicker";
 import { ErrorText } from "./ui";
 
 /** The influencer's rate card and negotiation style. Floors are private: only the creator's own agent sees them. */
 export function AgentSettingsForm({ onSaved, submitLabel = "Save agent settings" }: { onSaved?: () => void; submitLabel?: string }) {
   const { me, setMe } = useSession();
   const u = me!.user;
-  const [niche, setNiche] = useState(u.niche || "");
+  const [niches, setNiches] = useState<string[]>(u.niches?.length ? u.niches : u.niche ? [u.niche] : []);
   const [fixedMin, setFixedMin] = useState(u.rate_card?.fixed_min ?? "");
   const [cpmMin, setCpmMin] = useState(u.rate_card?.cpm_min ?? "");
   const [preferred, setPreferred] = useState(u.rate_card?.preferred_fixed ?? "");
@@ -22,8 +23,13 @@ export function AgentSettingsForm({ onSaved, submitLabel = "Save agent settings"
     setBusy(true);
     setError(null);
     setSaved(false);
+    if (niches.length === 0) {
+      setError("Choose at least one niche (analyze your channel or add one).");
+      setBusy(false);
+      return;
+    }
     try {
-      setMe(await api.saveInfluencer({ niche, fixed_min: fixedMin, cpm_min: cpmMin, preferred_fixed: preferred, persona, agent_active: active }));
+      setMe(await api.saveInfluencer({ niches, fixed_min: fixedMin, cpm_min: cpmMin, preferred_fixed: preferred, persona, agent_active: active }));
       setSaved(true);
       onSaved?.();
     } catch (err) {
@@ -35,12 +41,8 @@ export function AgentSettingsForm({ onSaved, submitLabel = "Save agent settings"
 
   return (
     <form className="form" onSubmit={submit}>
+      <NichePicker value={niches} onChange={setNiches} initial={u.niche_analysis} autoAnalyze={!u.rate_card} />
       <div className="grid-2">
-        <label>
-          Niche
-          <input value={niche} onChange={(e) => setNiche(e.target.value)} placeholder="fitness, food, tech…" required minLength={2} maxLength={40} />
-          <small>Advertiser agents only contact creators in the campaign's niche.</small>
-        </label>
         <label>
           Opening ask (fixed fee, USD)
           <input type="number" min="0.01" step="0.01" value={preferred} onChange={(e) => setPreferred(e.target.value)} required />

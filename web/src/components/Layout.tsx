@@ -88,6 +88,7 @@ export function Layout() {
                 My deals
               </NavLink>
               <NavLink to="/influencer/agent">My agent</NavLink>
+              <NavLink to="/influencer/profile">My profile</NavLink>
             </>
           )}
           <NavLink to="/account">Account</NavLink>

@@ -55,6 +55,10 @@ export function NewCampaign() {
   const { user } = useMe();
   const { status } = useSession();
   const navigate = useNavigate();
+  const [niches, setNiches] = useState<string[]>([]);
+  useEffect(() => {
+    api.niches().then((r) => setNiches(r.niches), () => setNiches([]));
+  }, []);
   const [form, setForm] = useState<CampaignInput>({
     advertiser: user.company,
     brand_handle: user.brand_handle || "@",
@@ -217,7 +221,12 @@ export function NewCampaign() {
             </label>
             <label>
               Niche
-              <input value={form.niche} onChange={(e) => set("niche", e.target.value)} required minLength={2} />
+              <input value={form.niche} onChange={(e) => set("niche", e.target.value)} required minLength={2} list="niche-options" />
+              <datalist id="niche-options">
+                {niches.map((n) => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
             </label>
             <label>
               Min subscribers

@@ -1007,3 +1007,55 @@ label.check input {
     grid-template-columns: 1fr;
   }
 }
+
+/* creator profile */
+.creator-profile .banner {
+  height: 120px;
+  border-radius: 12px;
+  background-size: cover;
+  background-position: center;
+}
+.creator-profile .pre {
+  white-space: pre-wrap;
+  max-height: 12em;
+  overflow: auto;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.video-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+}
+.video-cell img {
+  border-radius: 4px;
+  object-fit: cover;
+  flex: none;
+}
+
+/* niche picker */
+.niche-picker {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border, #e3e3e8);
+  border-radius: 10px;
+}
+.niche-picker .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.niche-picker .chip .link {
+  margin-left: 4px;
+  padding: 0 2px;
+}
+.niche-suggestions {
+  display: grid;
+  gap: 6px;
+}
+.niche-row {
+  align-items: flex-start;
+}
