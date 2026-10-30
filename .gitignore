@@ -18,3 +18,6 @@ keys/
 
 # Built web app (cd web && npm run build)
 src/zyroxq/api/static/
+
+# design references (third-party screenshots and assets, not ours to redistribute)
+Reference UI/

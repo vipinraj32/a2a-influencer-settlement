@@ -41,10 +41,11 @@ from ..clock import Clock
 from ..compliance import DISCLAIMER, campaign_problems
 from ..config import Settings, get_settings
 from ..mcp_servers.server import build_mcp
-from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentScope, Deal, DealState, RateCard, User, new_id
+from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentCheck, ContentScope, Deal, DealState, RateCard, User, new_id
 from ..services.context import AppContext, build_context, chat_model
 from ..services.deals import ADVERTISER_PRIVATE_EVENTS, AUTH_EXPIRED, POLICY_KIND, DealError, DealService
 from ..verifier.channels import summarize
+from ..verifier.content import suggest_checks
 from ..verifier.youtube import parse_video_id
 from ..wallet.signer import recover_personal_sign
 
@@ -81,9 +82,12 @@ class CampaignCreate(BaseModel):
     min_duration_seconds: int = Field(default=0, ge=0, le=4 * 3600)
     max_duration_seconds: int = Field(default=0, ge=0, le=4 * 3600)  # 0 = no length rule
     requirements: str = Field(default="", max_length=MAX_REQUIREMENTS_CHARS)
+    content_checks: list[ContentCheck] = Field(default_factory=list, max_length=6)  # checked in the video by the content agent
 
     @model_validator(mode="after")
     def bounds(self) -> CampaignCreate:
+        if len({c.id for c in self.content_checks}) != len(self.content_checks):
+            raise ValueError("content check ids must be unique")
         if self.max_duration_seconds and self.min_duration_seconds > self.max_duration_seconds:
             raise ValueError("minimum video length cannot exceed the maximum")
         if self.deliverable == "youtube_short" and self.max_duration_seconds > SHORTS_MAX_SECONDS:
@@ -103,6 +107,11 @@ class CampaignCreate(BaseModel):
             if v != v.quantize(Decimal("0.01")):
                 raise ValueError("amounts must have at most 2 decimals")
         return self
+
+
+class ChecksSuggestIn(BaseModel):
+    requirements: str = Field(default="", max_length=MAX_REQUIREMENTS_CHARS)
+    brand: str = Field(min_length=1, max_length=80)
 
 
 class Decision(BaseModel):
@@ -547,6 +556,13 @@ def create_app(
         campaign = await state.runner.start(CampaignSpec(**body.model_dump(), **snapshot, owner_id=user.id, payer=user.wallet))
         return campaign.model_dump(mode="json")
 
+    @app.post("/api/campaigns/content-checks/suggest")
+    async def suggest_content_checks(body: ChecksSuggestIn, _: AdvertiserUser) -> dict[str, Any]:
+        """Checks the content agent can run in the posted video, read from the brief. The advertiser edits and confirms them."""
+        checks, method = await suggest_checks(body.requirements, body.brand, state.ctx.llm)
+        return {"checks": [c.model_dump(mode="json") for c in checks], "method": method,
+                "caption_reader": state.ctx.captions is not None, "vision": state.ctx.llm is not None}  # fmt: skip
+
     @app.post("/api/campaigns/parse-brief")
     async def parse_brief(body: BriefIn, _: AdvertiserUser) -> dict[str, Any]:
         """LLM drafts the campaign form from free text. The draft is validated, and the human submits it."""
@@ -917,6 +933,7 @@ def create_app(
                     "requirements",
                     "min_duration_seconds",
                     "max_duration_seconds",
+                    "content_checks",
                 },
             )
             out.append({**d.model_dump(mode="json"), "campaign": brand})

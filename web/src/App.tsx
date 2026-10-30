@@ -11,6 +11,7 @@ import { CreatorProfile } from "./pages/CreatorProfile";
 import { NewCampaign } from "./pages/advertiser/NewCampaign";
 import { AgentPage } from "./pages/influencer/AgentPage";
 import { InfluencerHome } from "./pages/influencer/InfluencerHome";
+import { Landing } from "./pages/landing/Landing";
 import { Login } from "./pages/Login";
 import { Onboarding } from "./pages/Onboarding";
 import { useSession } from "./session";
@@ -36,7 +37,7 @@ function Home() {
 
 const router = createBrowserRouter([
   { path: "/login", element: <Login /> },
-  { path: "/", element: <Home /> },
+  { path: "/", element: <Landing /> },
   { path: "/app", element: <Home /> },
   {
     element: (

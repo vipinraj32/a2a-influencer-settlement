@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "uvicorn[standard]>=0.54.0",
     "web3>=8.0.0",
+    "youtube-transcript-api>=1.2.4",
 ]
 
 [project.scripts]
@@ -60,4 +61,6 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.ruff.lint.per-file-ignores]
 "tests/test_negotiation_api.py" = ["F811"]
 "tests/test_youtube_profile.py" = ["F811"]
-"tests/test_niche.py" = ["F811"]  # reuses test_e2e's fixtures by importing them
+"tests/test_niche.py" = ["F811"]
+"tests/test_proof_review.py" = ["F811"]
+"tests/test_content_agent.py" = ["F811"]  # reuses test_e2e's fixtures by importing them

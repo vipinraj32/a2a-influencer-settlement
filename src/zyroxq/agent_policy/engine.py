@@ -332,7 +332,7 @@ def opening(spec: CampaignSpec, policy: AdvertiserPolicy, deal_id: str) -> Offer
         required_tags=list(spec.required_tags),
         min_duration_seconds=spec.min_duration_seconds,
         max_duration_seconds=spec.max_duration_seconds,
-        requirements_hash=requirements_hash(spec.requirements),
+        requirements_hash=requirements_hash(spec.requirements_document()),
         scope=spec.scope,
         category=spec.category,
         disclosure_policies=list(spec.disclosure_policies),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../../api";
+import { ContentChecksList } from "../../components/ContentChecks";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { ActionButton, Avatar, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
@@ -14,12 +15,22 @@ const IN_ESCROW = new Set(["FUNDED", "PROOF_SUBMITTED", "PROOF_REJECTED", "VERIF
 
 function ProofForm({ deal, onDone }: { deal: InfluencerDeal; onDone: () => void }) {
   const { status } = useSession();
-  const [url, setUrl] = useState("");
+  const rejected = deal.state === "PROOF_REJECTED" ? deal.proof : null;
+  const [url, setUrl] = useState(rejected ? `https://youtube.com/watch?v=${rejected.video_id}` : "");
   const [inVideo, setInVideo] = useState(false);
+  const deadline = deal.terms?.publish_by;
+  const late = deadline ? new Date(deadline).getTime() < Date.now() : false;
+  if (late) return <Notice tone="bad">The publish deadline ({when(deadline)}) has passed: no more submissions; the escrow refunds the advertiser.</Notice>;
   const tags = deal.terms?.required_tags.join(" ") ?? "#ad";
   const rules = deal.terms?.disclosure_policies ?? [];
   return (
     <div className="proof-form">
+      {rejected && (
+        <h3>
+          Resubmit (submission #{rejected.attempt + 1}) before {when(deadline)}
+        </h3>
+      )}
+      {rejected && <p className="small">Fixed the same video? Resubmit its link below. Uploaded a new one? Paste the new link.</p>}
       <p>
         Post your {DELIVERABLE_LABEL[deal.campaign.deliverable] ?? deal.campaign.deliverable} on your verified channel before{" "}
         <strong>{when(deal.terms?.publish_by)}</strong>. Put <code>{deal.campaign.brand_handle}</code> and <code>{tags}</code> in the description, then
@@ -36,6 +47,7 @@ function ProofForm({ deal, onDone }: { deal: InfluencerDeal; onDone: () => void 
           Disclosure rules {rules.join(", ")}: put the label in the title or at the very start of the description, and show or say it in the video itself.
         </p>
       )}
+      <ContentChecksList checks={deal.campaign.content_checks ?? []} />
       <label className="check">
         <input type="checkbox" checked={inVideo} onChange={(e) => setInVideo(e.target.checked)} />I confirm the sponsorship disclosure is shown or said in the
         video itself (YouTube's API cannot check this, so it is recorded as your statement)
@@ -51,7 +63,7 @@ function ProofForm({ deal, onDone }: { deal: InfluencerDeal; onDone: () => void 
             onDone();
           }}
         >
-          Submit for verification
+          {rejected ? "Resubmit for verification" : "Submit for verification"}
         </ActionButton>
       </div>
     </div>
@@ -165,7 +177,7 @@ export function InfluencerHome() {
                   text={deal.campaign.requirements}
                   hash={deal.terms?.requirements_hash}
                 />
-                {NEEDS_PROOF.has(deal.state) && <ProofForm deal={deal} onDone={() => void deals.reload()} />}
+                {NEEDS_PROOF.has(deal.state) && <ProofForm key={deal.proof?.submitted_at ?? deal.id} deal={deal} onDone={() => void deals.reload()} />}
               </>
             }
           />

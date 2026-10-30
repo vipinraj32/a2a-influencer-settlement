@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
+import { Logo } from "./Logo";
 import { api } from "../api";
 import { useStreamConnected } from "../live";
 import { useMe, useSession } from "../session";
@@ -70,7 +71,7 @@ export function Layout() {
     <div className="shell">
       <header className="topbar">
         <NavLink to={home} className="brand">
-          <span className="logo">Z</span> ZyroXQ
+          <Logo size={26} />
         </NavLink>
         <nav className="nav">
           {user.role === "advertiser" ? (

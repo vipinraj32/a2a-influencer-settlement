@@ -1,4 +1,4 @@
-import type { AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
+import type { AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, ContentCheck, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -57,6 +57,8 @@ export const api = {
 
   niches: () => get<{ niches: string[]; max_per_creator: number }>("/api/niches"),
   analyzeNiches: () => post<NicheAnalysis>("/api/me/niche-analysis", {}),
+  suggestChecks: (requirements: string, brand: string) =>
+    post<{ checks: ContentCheck[]; method: "rules" | "llm"; caption_reader: boolean; vision: boolean }>("/api/campaigns/content-checks/suggest", { requirements, brand }),
   directory: () => get<DirectoryEntry[]>("/api/influencers"),
 
   campaigns: () => get<Campaign[]>("/api/campaigns"),

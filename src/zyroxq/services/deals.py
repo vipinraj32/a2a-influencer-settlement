@@ -36,6 +36,8 @@ from ..models import (
     transition_allowed,
 )
 from ..policy import PolicyResult, check_cart, check_terms, performance_payout
+from ..verifier.content import analyze_content
+from ..verifier.explain import explain_rejection, explain_sent_back
 from ..verifier.verify import all_passed, check_video
 from ..verifier.youtube import parse_video_id
 from ..wallet.gateway import GatewayRejected, GatewayUnavailable
@@ -265,7 +267,7 @@ class DealService:
             elif not all(c["passed"] for c in checks):
                 gates.append("disclosure checks failed")
             if self.review_pending(d, spec) and d.state == DealState.VERIFIED:
-                gates.append("advertiser disclosure review pending")
+                gates.append("advertiser review pending" + (" (content agent could not settle every check)" if not spec.review_required else ""))
             deals.append({
                 "deal_id": d.id,
                 "influencer_id": d.influencer_id,
@@ -273,7 +275,7 @@ class DealService:
                 "disclosure_policies": d.terms.disclosure_policies,
                 "checks": checks,
                 "attestations": d.proof.attestations if d.proof else {},
-                "review": "not_required" if not spec.review_required else (("approved" if review.approved else "rejected") if review else "pending"),
+                "review": "not_required" if not self.review_required(d, spec) else (("approved" if review.approved else "rejected") if review else "pending"),
                 "payment_approval": payment.model_dump(mode="json") if payment else None,
                 "terms_hash": h,
                 "terms_hash_matches_approval": d.approved_terms_hash in (None, h),
@@ -607,6 +609,8 @@ class DealService:
             raise DealError("not a YouTube URL or video id")
         if self.ctx.videos is None:
             raise DealError("the verifier is offline: set YOUTUBE_API_KEY")
+        if self.ctx.clock.now() > self._terms(deal).publish_by:
+            raise DealError("the publish deadline has passed: the escrow refunds this deal")
         spec = (await self.campaign(deal.campaign_id)).spec
         video = await self.ctx.videos.get_video(video_id)
         assert deal.agreed_at is not None
@@ -615,12 +619,26 @@ class DealService:
         if video is not None:
             checks += self._disclosure_checks(terms, video, attestations or {})
         now = self.ctx.clock.now()
-        deal.proof = Proof(video_id=video_id, submitted_at=now, checks=checks, attestations=attestations or {},
-                           published_at=video.published_at if video else None, views=video.views if video else None)  # fmt: skip
+        content = None
+        if video is not None and spec.content_checks:
+            content = await analyze_content(spec.content_checks, video_id, self.ctx.captions, self.ctx.frames, self.ctx.llm, now)
+            # Only deterministic results (caption counts) decide; vision and "unverified" go to the advertiser's review
+            checks += [ProofCheck(name=f"content:{r.check_id}", passed=r.status == "pass", detail=r.detail) for r in content.results if r.decisive]
+        if deal.proof is not None:
+            deal.proof_history.append(deal.proof)
+        deal.proof = Proof(video_id=video_id, submitted_at=now, checks=checks, attestations=attestations or {}, attempt=len(deal.proof_history) + 1,
+                           published_at=video.published_at if video else None, views=video.views if video else None, content=content)  # fmt: skip
         passed = all_passed(checks)
-        await self.audit(deal.campaign_id, deal.id, "verifier", "proof_checked", video_id=video_id, passed=passed,
+        if content is not None:
+            await self.audit(deal.campaign_id, deal.id, "content-agent", "content_checked", video_id=video_id, transcript=content.transcript,
+                             results={r.check_id: r.status for r in content.results}, needs_review=content.needs_human)  # fmt: skip
+        await self.audit(deal.campaign_id, deal.id, "verifier", "proof_checked", video_id=video_id, passed=passed, attempt=deal.proof.attempt,
                          failed=[f"{c.name}: {c.detail}" for c in checks if not c.passed])  # fmt: skip
         if not passed:
+            review = await explain_rejection(checks, terms, spec.brand_handle, deal.agreed_at, now, deal.proof.published_at, self.ctx.llm)
+            deal.proof.review = review
+            await self.audit(deal.campaign_id, deal.id, "verifier", "proof_rejected", summary=review.summary, can_resubmit=review.can_resubmit,
+                             resubmit_by=review.resubmit_by, issues=[i.check for i in review.issues])  # fmt: skip
             return await self.save(deal, DealState.PROOF_REJECTED)
         terms = self._terms(deal)
         deal.fixed_release_due = now + timedelta(hours=max(terms.min_live_hours, terms.review_window_hours))
@@ -647,11 +665,20 @@ class DealService:
         deal = await self.record_approval(deal_id, "compliance_review", reviewer, approved, note)
         await self.audit(deal.campaign_id, deal.id, "human", "compliance_reviewed", approved=approved, note=note)
         if not approved:
+            assert deal.proof is not None
+            deal.proof.review = explain_sent_back(note, self._terms(deal), self.ctx.clock.now())
+            await self.audit(deal.campaign_id, deal.id, "human", "proof_rejected", summary=deal.proof.review.summary,
+                             can_resubmit=deal.proof.review.can_resubmit, resubmit_by=deal.proof.review.resubmit_by)  # fmt: skip
             deal = await self.save(deal, DealState.PROOF_REJECTED)
         return deal
 
+    @staticmethod
+    def review_required(deal: Deal, spec: CampaignSpec) -> bool:
+        """The advertiser reviews when the campaign asks for it or the content agent could not settle a check."""
+        return spec.review_required or bool(deal.proof and deal.proof.content and deal.proof.content.needs_human)
+
     def review_pending(self, deal: Deal, spec: CampaignSpec) -> bool:
-        if not spec.review_required or deal.terms is None:
+        if not self.review_required(deal, spec) or deal.terms is None:
             return False
         h = deal.terms.terms_hash()
         return not any(a.kind == "compliance_review" and a.approved and a.terms_hash == h for a in deal.approvals)

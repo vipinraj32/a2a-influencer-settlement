@@ -127,6 +127,7 @@ export interface CampaignSpec {
   min_duration_seconds: number;
   max_duration_seconds: number;
   requirements: string;
+  content_checks: ContentCheck[];
   owner_id: string;
   payer: string;
   compensation_model: CompensationModel;
@@ -309,6 +310,61 @@ export interface ProofCheck {
   detail: string;
 }
 
+export interface ContentCheck {
+  id: string;
+  kind: "spoken_mention" | "logo_visible";
+  phrase: string;
+  aliases: string[];
+  min_count: number;
+  max_count: number | null;
+  description: string;
+}
+
+export interface ContentResult {
+  check_id: string;
+  kind: string;
+  requirement: string;
+  status: "pass" | "fail" | "unverified";
+  method: "captions" | "vision" | "none";
+  decisive: boolean;
+  observed: Record<string, unknown>;
+  evidence: string[];
+  detail: string;
+}
+
+export interface ContentReport {
+  video_id: string;
+  analyzed_at: string;
+  transcript: "manual_captions" | "auto_captions" | "unavailable";
+  transcript_language: string;
+  transcript_note: string;
+  frames: string[];
+  vision: "llm" | "unavailable";
+  results: ContentResult[];
+}
+
+export interface ProofReview {
+  decided_by: "verifier" | "advertiser";
+  explained_by: "rules" | "llm";
+  summary: string;
+  issues: { check: string; problem: string; fix: string; fixable: boolean }[];
+  can_resubmit: boolean;
+  resubmit_by: string | null;
+  at: string;
+}
+
+export interface Proof {
+  video_id: string;
+  submitted_at: string;
+  checks: ProofCheck[];
+  published_at: string | null;
+  views: number | null;
+  attestations: Record<string, boolean>;
+  attempt: number;
+  review: ProofReview | null;
+  content: ContentReport | null;
+}
+
 export interface Payout {
   kind: "fixed" | "performance" | "refund";
   to: string;
@@ -336,14 +392,8 @@ export interface Deal {
   payment_attempts: PaymentAttempt[];
   funding_tx: string | null;
   funding_simulated: boolean;
-  proof: {
-    video_id: string;
-    submitted_at: string;
-    checks: ProofCheck[];
-    published_at: string | null;
-    views: number | null;
-    attestations: Record<string, boolean>;
-  } | null;
+  proof: Proof | null;
+  proof_history: Proof[];
   attestations: { kind: string; amount: string; evidence_hash: string; verifier: string; signature: string }[];
   payouts: Payout[];
   fixed_release_due: string | null;
@@ -355,7 +405,7 @@ export interface Deal {
 export interface InfluencerDeal extends Deal {
   campaign: Pick<
     CampaignSpec,
-    "advertiser" | "brand_handle" | "niche" | "deliverable" | "brief" | "required_tags" | "requirements" | "min_duration_seconds" | "max_duration_seconds"
+    "advertiser" | "brand_handle" | "niche" | "deliverable" | "brief" | "required_tags" | "requirements" | "min_duration_seconds" | "max_duration_seconds" | "content_checks"
   >;
 }
 
@@ -394,6 +444,7 @@ export interface CampaignInput {
   min_duration_seconds: number;
   max_duration_seconds: number;
   requirements: string;
+  content_checks: ContentCheck[];
   compensation_model: CompensationModel;
   scope: ContentScope;
   category: string;

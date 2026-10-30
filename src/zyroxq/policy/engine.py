@@ -69,7 +69,7 @@ def _content_rules(x: Offer | DealTerms) -> tuple[int, int, str]:
 
 
 def _campaign_content_rules(campaign: CampaignSpec) -> tuple[int, int, str]:
-    return (campaign.min_duration_seconds, campaign.max_duration_seconds, requirements_hash(campaign.requirements))
+    return (campaign.min_duration_seconds, campaign.max_duration_seconds, requirements_hash(campaign.requirements_document()))
 
 
 def recover_terms_signer(terms: DealTerms) -> str | None:

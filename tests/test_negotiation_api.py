@@ -179,7 +179,7 @@ async def test_compliance_review_gates_the_fixed_fee(onboarded):
     assert (await adv.get(f"/api/deals/{deal_id}")).json()["state"] == "VERIFIED"  # held for the advertiser's review
     compliance = (await adv.get(f"/api/campaigns/{cid}/compliance")).json()
     row = next(d for d in compliance["deals"] if d["deal_id"] == deal_id)
-    assert row["review"] == "pending" and "advertiser disclosure review pending" in row["gates"]
+    assert row["review"] == "pending" and "advertiser review pending" in row["gates"]
     assert row["payment_approval"]["approved"] and row["terms_hash_matches_approval"] and compliance["settlement_simulated"]
     assert (await ava.post(f"/api/deals/{deal_id}/compliance/review", json={"approved": True})).status_code == 403  # advertisers only
 

@@ -154,6 +154,29 @@ class ContentScope(BaseModel):
     deliverable_count: int = Field(default=1, ge=1, le=1)  # one verifiable post per deal for now
 
 
+class ContentCheck(BaseModel):
+    """A requirement the content agent checks in the posted video itself (not just its title and description).
+
+    spoken_mention: count how often `phrase` (or an alias) is said, from the video's captions. Deterministic count.
+    logo_visible:   look for the brand's logo in frames YouTube publishes for the video. Vision model, advisory only.
+    """
+
+    id: str = Field(pattern=r"^[a-z0-9_]{2,30}$")
+    kind: Literal["spoken_mention", "logo_visible"]
+    phrase: str = Field(min_length=2, max_length=60)  # the brand / product name to hear, or whose logo to see
+    aliases: list[str] = Field(default_factory=list, max_length=5)  # other spellings captions may produce ("fit fuel")
+    min_count: int = Field(default=1, ge=1, le=50)  # spoken_mention only
+    max_count: int | None = Field(default=None, ge=1, le=50)  # reported, never a reason to reject
+    description: str = Field(default="", max_length=200)
+
+    def text(self) -> str:
+        if self.kind == "spoken_mention":
+            times = f"{self.min_count}" + (f"-{self.max_count}" if self.max_count and self.max_count > self.min_count else "")
+            alias = f" (also counts: {', '.join(self.aliases)})" if self.aliases else ""
+            return f'Say "{self.phrase}" out loud at least {self.min_count} time(s) (asked: {times}){alias}; checked from the video\'s captions.'
+        return f"Show the {self.phrase} logo clearly on screen; checked by AI on frames YouTube publishes, then confirmed by the advertiser."
+
+
 class CampaignSpec(BaseModel):
     id: str = Field(default_factory=lambda: new_id("CMP"))
     advertiser: str
@@ -187,6 +210,14 @@ class CampaignSpec(BaseModel):
     max_rounds: int = DEFAULT_MAX_ROUNDS
     review_required: bool = False  # advertiser reviews disclosure compliance before the fixed fee is released
     agent_policy_version: int = 0  # advertiser agent policy in force when the campaign started (0 = defaults)
+    content_checks: list[ContentCheck] = Field(default_factory=list)  # checked in the video by the content agent
+
+    def requirements_document(self) -> str:
+        """What creators sign (`requirements_hash`): the brief plus the automated checks, when there are any."""
+        if not self.content_checks:
+            return self.requirements
+        lines = "\n".join(f"- [{c.id}] {c.text()}" for c in self.content_checks)
+        return f"{self.requirements}\n\n## Checked in the video by the content agent\n{lines}\n".lstrip()
 
 
 def requirements_hash(text: str) -> str:
@@ -354,6 +385,55 @@ class ProofCheck(BaseModel):
     detail: str = ""
 
 
+class ContentResult(BaseModel):
+    check_id: str
+    kind: str
+    requirement: str
+    status: Literal["pass", "fail", "unverified"]  # unverified: the agent could not tell; a human decides
+    method: Literal["captions", "vision", "none"]
+    decisive: bool  # True only for deterministic results (caption counts); vision results are advisory
+    observed: dict[str, Any] = Field(default_factory=dict)  # e.g. {"count": 3} or {"visible": true, "confidence": 0.8}
+    evidence: list[str] = Field(default_factory=list)  # caption lines with timestamps, frame descriptions
+    detail: str = ""
+
+
+class ContentReport(BaseModel):
+    """What the content agent extracted from the video and how each content check came out."""
+
+    video_id: str
+    analyzed_at: datetime
+    transcript: Literal["manual_captions", "auto_captions", "unavailable"]
+    transcript_language: str = ""
+    transcript_note: str = ""
+    frames: list[str] = Field(default_factory=list)  # image URLs analyzed
+    vision: Literal["llm", "unavailable"] = "unavailable"
+    results: list[ContentResult] = Field(default_factory=list)
+
+    @property
+    def needs_human(self) -> bool:
+        """Anything the deterministic checks could not settle goes to the advertiser's review."""
+        return any(r.status == "unverified" or not r.decisive for r in self.results)
+
+
+class ProofIssue(BaseModel):
+    check: str
+    problem: str
+    fix: str
+    fixable: bool = True  # a resubmission before the deadline can fix it
+
+
+class ProofReview(BaseModel):
+    """Why a proof was not accepted, shown to both parties. The checks decide; this only explains."""
+
+    decided_by: Literal["verifier", "advertiser"]
+    explained_by: Literal["rules", "llm"]  # who wrote `summary`; issues are always the fixed templates
+    summary: str
+    issues: list[ProofIssue] = Field(default_factory=list)
+    can_resubmit: bool
+    resubmit_by: datetime | None = None
+    at: datetime
+
+
 class Proof(BaseModel):
     video_id: str
     submitted_at: datetime
@@ -362,6 +442,9 @@ class Proof(BaseModel):
     views: int | None = None
     # The creator's own statements about what the API cannot see (e.g. an on-screen disclosure). Recorded, not verified.
     attestations: dict[str, bool] = Field(default_factory=dict)
+    attempt: int = 1
+    review: ProofReview | None = None  # set when this submission was rejected or sent back
+    content: ContentReport | None = None  # the content agent's findings in the video itself
 
 
 class Attestation(BaseModel):
@@ -407,6 +490,7 @@ class Deal(BaseModel):
     funding_tx: str | None = None  # set only once settlement evidence was verified and bound in escrow
     funding_simulated: bool = False
     proof: Proof | None = None
+    proof_history: list[Proof] = Field(default_factory=list)  # earlier submissions, oldest first
     attestations: list[Attestation] = Field(default_factory=list)
     payouts: list[Payout] = Field(default_factory=list)
     fixed_release_due: datetime | None = None

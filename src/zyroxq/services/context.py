@@ -26,6 +26,7 @@ from ..hsp.networks import TokenInfo, find_token
 from ..store import MemoryStore, PostgresStore, Store
 from ..verifier.attest import Attestor
 from ..verifier.channels import ChannelSource, YouTubeChannelApi
+from ..verifier.content import CaptionSource, FrameSource, YouTubeCaptions, YouTubeFrames
 from ..verifier.youtube import VideoSource, YouTubeDataApi
 from ..wallet.gateway import Gateway, HostedGateway, SimulatedGateway
 from .events import EventBus
@@ -49,6 +50,8 @@ class AppContext:
     registry: InfluencerRegistry
     disclosure: DisclosureRegistry  # versioned sponsorship-disclosure policies
     channels: ChannelSource | None = None  # public channel stats and uploads for creator profiles (YOUTUBE_API_KEY)
+    captions: CaptionSource | None = None  # content agent: what is said in a posted video
+    frames: FrameSource | None = None  # content agent: frames YouTube publishes for a posted video
     bus: EventBus = field(default_factory=EventBus)
     warnings: list[str] = field(default_factory=list)
 
@@ -153,6 +156,8 @@ async def build_context(
         registry=InfluencerRegistry(store, settings.public_base_url, secret),
         disclosure=DisclosureRegistry(store),
         channels=channels,
+        captions=YouTubeCaptions(),
+        frames=YouTubeFrames(),
         warnings=warnings,
     )
     await ctx.disclosure.load()

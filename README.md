@@ -329,6 +329,37 @@ payment authorization is drafted for that hash (`approved_terms_hash`), approval
 | `GET /api/disclosure-policies`, `PUT /api/disclosure-policies/{jurisdiction}` | policies (operator publishes) |
 | `GET /api/pricing/rules` | formulas, version, worked example |
 
+### Content agent: requirements checked inside the video
+
+Title, description, tags, length and disclosure are always checked. For things only the video itself shows,
+the advertiser adds **content checks** to the campaign (`CampaignSpec.content_checks`), suggested from the brief by
+`POST /api/campaigns/content-checks/suggest` (keyword rules, or the LLM when configured) and edited before creating
+the campaign. They are appended to the requirements document creators sign (`requirements_document()`), so they
+are part of the agreed hash.
+
+| Check | How the content agent reads the video | Effect |
+|---|---|---|
+| `spoken_mention` ("say FitFuel 4–5 times") | captions via `youtube-transcript-api`: the creator's own track, else YouTube's automatic speech captions; the brand and its spellings ("fit fuel") are counted deterministically, with timestamps | fewer than `min_count` rejects the proof (resubmittable); `max_count` is only reported |
+| `logo_visible` | the thumbnail and the three frames YouTube publishes for every video (`i.ytimg.com/vi/<id>/hq1-3.jpg`) go to the vision model | advisory only: a sighting or a miss is evidence for the advertiser's review, never a payout decision |
+
+Anything the agent cannot settle (no captions yet, captions blocked, no vision model, any logo result) makes the
+advertiser's review required before the fixed fee is released, even if the campaign did not ask for review. The
+report (`proof.content`: transcript source, counts, caption lines, frames, verdicts) is shown to both sides.
+Limitations: automatic captions can mishear names (the creator can upload correct captions and resubmit the same
+link); a few frames cannot prove a logo is absent; captions may not exist right after upload; non-browser
+requests to YouTube's caption endpoint can be blocked from some cloud networks.
+
+### Rejected proofs: explained to both sides, resubmit until the deadline
+
+When a submitted video fails a check, or the advertiser's disclosure review sends it back, the deal goes to
+`PROOF_REJECTED` with a `proof.review` (`verifier/explain.py`): a fixed template per failed check says what is wrong,
+how to fix it (edit the same video or upload a new one) and whether a resubmission can fix it at all; an LLM, when
+configured, may only rewrite the one-line summary from those templates (it never sees the video text and cannot
+change the verdict). Creator and advertiser see the same report in the deal view and a `proof_rejected` event in
+both timelines. The creator resubmits (same link after editing, or a new one) until `publish_by`; each attempt is
+numbered and earlier ones are kept in `proof_history`. After the deadline submissions are refused and the scheduler
+refunds the escrow.
+
 ### Creator niches: suggested from the channel, confirmed by the creator
 
 During onboarding the creator does not have to type a niche. `POST /api/me/niche-analysis` reads the public
@@ -465,7 +496,7 @@ src/zyroxq/
   chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
   chain/settlement.py  settlement evidence: receipt → Transfer(payer → escrow, exact amount); simulated twin
   chain/balances.py    advisory USDC balance reads for the signing panel
-  verifier/            youtube (Data API; fixture source for tests) · channels (channel stats, uploads, comments) · verify (checks) · attest (signed releases)
+  verifier/            youtube (Data API; fixture source for tests) · channels (channel stats, uploads, comments) · content (in-video checks) · explain (rejection reports) · verify (checks) · attest (signed releases)
   auth/                Google OAuth + YouTube channel proof · wallet-link messages · agent-key encryption · API tokens
   agents/influencer/   LangGraph negotiation graph + A2A server + hub (one agent per onboarded creator)
   agents/advertiser/   LangGraph campaign graph · negotiation moves · runner · MCP assistant

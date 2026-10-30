@@ -90,7 +90,7 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         actor = f"influencer-agent:{reg.profile.id}"
         counters: list[Offer] = []
         while True:
-            message = {"type": "offer", "advertiser": spec.advertiser, "requirements": spec.requirements, "offer": offer.model_dump(mode="json")}
+            message = {"type": "offer", "advertiser": spec.advertiser, "requirements": spec.requirements_document(), "offer": offer.model_dump(mode="json")}
             raw = await ctx.a2a.send(reg.agent_url, message, context_id=deal.id)
             reply = NegotiationReply.model_validate(raw)
             await deals.record_round(deal, offer, {"kind": reply.kind, "reason": reply.reason, "decided_by": raw.get("decided_by"),

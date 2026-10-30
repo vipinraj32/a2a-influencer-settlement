@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../../api";
+import { ContentChecksEditor } from "../../components/ContentChecks";
 import { Card, ErrorText, Notice } from "../../components/ui";
 import { MODEL_LABEL, clock, docSize, usd } from "../../format";
 import { useMe, useSession } from "../../session";
@@ -76,6 +77,7 @@ export function NewCampaign() {
     min_duration_seconds: 15,
     max_duration_seconds: 60,
     requirements: "",
+    content_checks: [],
     compensation_model: "hybrid",
     scope: { usage_rights: "organic_only", license_days: 0, paid_amplification: false, exclusivity_days: 0, exclusivity_category: "", revisions: 1, deliverable_count: 1 },
     category: "",
@@ -296,6 +298,7 @@ export function NewCampaign() {
               </span>
             </div>
           </div>
+          <ContentChecksEditor value={form.content_checks} onChange={(v) => set("content_checks", v)} requirements={form.requirements} brand={form.advertiser} />
           <Notice>
             Each influencer agent receives this document and signs its hash in the deal terms, so neither side can change it after the deal.
           </Notice>

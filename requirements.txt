@@ -51,6 +51,8 @@ cryptography==50.0.2
     #   zyroxq
 cytoolz==1.2.0 ; implementation_name == 'cpython'
     # via eth-utils
+defusedxml==0.7.1
+    # via youtube-transcript-api
 distro==1.9.0
     # via langsmith
 docstring-parser==0.18.0
@@ -310,6 +312,7 @@ requests==2.34.2
     #   langsmith
     #   requests-toolbelt
     #   web3
+    #   youtube-transcript-api
 requests-toolbelt==1.0.0
     # via langsmith
 rlp==5.0.0
@@ -397,5 +400,7 @@ xxhash==4.0.2
     #   langsmith
 yarl==1.25.1
     # via aiohttp
+youtube-transcript-api==1.2.4
+    # via zyroxq
 zstandard==0.25.0
     # via langsmith

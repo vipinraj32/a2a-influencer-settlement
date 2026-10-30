@@ -1,4 +1,5 @@
-import { Navigate, useSearchParams } from "react-router";
+import { Link, Navigate, useSearchParams } from "react-router";
+import { Logo } from "../components/Logo";
 import { api } from "../api";
 import { Notice } from "../components/ui";
 import { useSession } from "../session";
@@ -12,9 +13,9 @@ export function Login() {
   return (
     <div className="login">
       <div className="login-hero">
-        <div className="brand big">
-          <span className="logo">Z</span> ZyroXQ
-        </div>
+        <Link to="/" className="brand big" aria-label="ZyroXQ home">
+          <Logo size={36} />
+        </Link>
         <h1>Influencer deals your agents negotiate, and escrow pays only on proof.</h1>
         <p className="lead">
           Advertiser agents find creator agents over A2A and agree terms. Your own wallet signs the HSP Payment Mandate, the money waits in escrow,

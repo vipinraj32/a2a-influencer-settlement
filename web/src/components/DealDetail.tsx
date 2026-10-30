@@ -2,14 +2,17 @@ import type { ReactNode } from "react";
 import { api } from "../api";
 import { MODEL_LABEL, humanize, num, usd, videoLength, when } from "../format";
 import { useLiveEvents, useResource } from "../live";
-import { useSession } from "../session";
+import { useMe, useSession } from "../session";
 import type { Deal } from "../types";
+import { ContentReportView } from "./ContentChecks";
 import { NegotiationRoom } from "./NegotiationRoom";
+import { ProofHistory, ProofReviewCard } from "./ProofReview";
 import { Timeline } from "./Timeline";
 import { Address, Card, Empty, StateBadge } from "./ui";
 
 /** Everything about one deal, shared by the advertiser and influencer views. `actions` renders role-specific buttons. */
 export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactNode; actions?: ReactNode }) {
+  const role = useMe().user.role;
   const { status } = useSession();
   const explorer = status?.escrow.simulated ? undefined : status?.chain.explorer_url;
   const events = useResource(() => api.dealEvents(deal.id), deal.id);
@@ -129,7 +132,9 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
         <>
           <h3>
             Proof: <a href={`https://youtube.com/watch?v=${deal.proof.video_id}`} target="_blank" rel="noreferrer">{deal.proof.video_id}</a>
+            {deal.proof.attempt > 1 && <span className="muted small"> · submission #{deal.proof.attempt}</span>}
           </h3>
+          {deal.proof.review && deal.state === "PROOF_REJECTED" && <ProofReviewCard review={deal.proof.review} viewer={role === "advertiser" ? "advertiser" : "creator"} />}
           <ul className="checks">
             {deal.proof.checks.map((c) => (
               <li key={c.name} className={c.passed ? "pass" : "fail"}>
@@ -138,12 +143,14 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
               </li>
             ))}
           </ul>
+          {deal.proof.content && <ContentReportView report={deal.proof.content} />}
           {Object.keys(deal.proof.attestations ?? {}).length > 0 && (
             <p className="small muted">Creator attested: {Object.keys(deal.proof.attestations).map(humanize).join(", ")} (statements, not machine-verified)</p>
           )}
           <p className="muted small">
             Views at check: {num(deal.proof.views)} · fixed fee due {when(deal.fixed_release_due)} · performance due {when(deal.performance_due)}
           </p>
+          <ProofHistory history={deal.proof_history ?? []} />
         </>
       )}
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../../api";
 import { ComplianceCard, ReviewForm } from "../../components/Compliance";
+import { needsReview } from "../../components/ContentChecks";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
@@ -393,7 +394,7 @@ export function CampaignView() {
                     Pay in HSP checkout
                   </a>
                 )}
-                {deal.state === "VERIFIED" && c.spec.review_required && <ReviewForm dealId={deal.id} onDone={reloadAll} />}
+                {deal.state === "VERIFIED" && (c.spec.review_required || needsReview(deal.proof?.content)) && <ReviewForm dealId={deal.id} onDone={reloadAll} />}
                 {deal.state === "VERIFIED" && <DisputeForm dealId={deal.id} />}
               </>
             }
