@@ -526,30 +526,28 @@ function Faq() {
 }
 
 const RESOURCES = [
-  { img: "res-escrow.webp", kind: "Guide", title: "How escrow payouts work" },
-  { img: "res-a2a.webp", kind: "Architecture", title: "Agent Cards and A2A" },
-  { img: "res-content.webp", kind: "Product", title: "What the content agent checks" },
+  {
+    img: "res-escrow.webp",
+    kind: "Guide",
+    title: "How escrow payouts work",
+    text: "The full cap is locked when you sign. The fixed fee is released after the post is verified, the performance fee seven days later, and anything unused is refunded to you.",
+  },
+  {
+    img: "res-a2a.webp",
+    kind: "Architecture",
+    title: "Agent Cards and A2A",
+    text: "Every creator agent publishes an Agent Card. Your agent finds them, sends offers in parallel, and a rules engine decides each reply — the AI only suggests.",
+  },
+  {
+    img: "res-content.webp",
+    kind: "Product",
+    title: "What the content agent checks",
+    text: "Before any payout, the video is checked against your brief: channel, publish window, disclosure, required tags and brand mentions, with reasons a creator can fix.",
+  },
 ];
 
 function Resources() {
-  const track = useRef<HTMLUListElement>(null);
-  const [edge, setEdge] = useState({ start: true, end: false });
   const reveal = useReveal();
-  const update = useCallback(() => {
-    const el = track.current;
-    if (el) setEdge({ start: el.scrollLeft < 8, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 8 });
-  }, []);
-  useEffect(() => {
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, [update]);
-  const scroll = (d: number) => {
-    const el = track.current;
-    if (!el) return;
-    const card = el.querySelector("li");
-    el.scrollBy({ left: d * ((card?.clientWidth ?? 400) + 32), behavior: "smooth" });
-  };
   return (
     <section className="lp-resources" id="resources" aria-labelledby="res-title">
       <div className="lp-container">
@@ -561,16 +559,8 @@ function Resources() {
               Read the docs
             </Cta>
           </div>
-          <div className="lp-arrows">
-            <button type="button" onClick={() => scroll(-1)} aria-label="Previous guides" disabled={edge.start}>
-              <Icon name="arrowLeft" size={26} />
-            </button>
-            <button type="button" onClick={() => scroll(1)} aria-label="Next guides" disabled={edge.end}>
-              <Icon name="arrow" size={26} />
-            </button>
-          </div>
         </motion.div>
-        <ul className="lp-res-track" ref={track} onScroll={update}>
+        <ul className="lp-res-grid">
           {RESOURCES.map((r, k) => (
             <motion.li key={r.title} {...reveal(k * 0.08)}>
               <a href={DOCS} target="_blank" rel="noreferrer" className="lp-res-card">
@@ -580,8 +570,9 @@ function Resources() {
                 <span className="lp-res-body">
                   <small>{r.kind}</small>
                   <strong>{r.title}</strong>
+                  <span className="lp-res-text">{r.text}</span>
                   <em>
-                    Read <Icon name="arrow" size={16} />
+                    Read the guide <Icon name="arrow" size={16} />
                   </em>
                 </span>
               </a>

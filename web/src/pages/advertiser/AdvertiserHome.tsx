@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../../api";
 import { Avatar, CampaignBadge, ErrorText, Spinner, StateBadge } from "../../components/ui";
@@ -112,11 +113,7 @@ export function AdvertiserHome() {
           ) : list.length === 0 ? (
             <GetStarted hasWallet={!!user.wallet} />
           ) : (
-            <ul className="camp-list">
-              {list.map((c) => (
-                <CampaignRow key={c.spec.id} campaign={c} deals={byCampaign.get(c.spec.id) ?? []} />
-              ))}
-            </ul>
+            <CampaignList campaigns={list} byCampaign={byCampaign} />
           )}
         </section>
 
@@ -243,6 +240,100 @@ function Kpi({ icon, label, value, foot, tone = "" }: { icon: string; label: str
       <span className="kpi-label">{label}</span>
       <strong className="kpi-value">{value}</strong>
       <span className="kpi-foot">{foot}</span>
+    </div>
+  );
+}
+
+const FILTERS: { key: string; label: string; match: (c: Campaign) => boolean }[] = [
+  { key: "all", label: "All", match: () => true },
+  { key: "progress", label: "In progress", match: (c) => ["planning", "negotiating", "awaiting_approval", "funding"].includes(c.status) },
+  { key: "active", label: "Active", match: (c) => c.status === "active" },
+  { key: "done", label: "Done", match: (c) => c.status === "done" },
+  { key: "failed", label: "Failed", match: (c) => c.status === "failed" },
+];
+const PAGE_SIZE = 5;
+
+function CampaignList({ campaigns, byCampaign }: { campaigns: Campaign[]; byCampaign: Map<string, Deal[]> }) {
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const q = query.trim().toLowerCase();
+  const current = FILTERS.find((f) => f.key === filter) ?? FILTERS[0];
+  const shown = campaigns
+    .filter(current.match)
+    .filter((c) => !q || [c.spec.advertiser, c.spec.niche, c.spec.deliverable, c.status].some((v) => v?.toLowerCase().includes(q)));
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const at = Math.min(page, pages - 1);
+  const slice = shown.slice(at * PAGE_SIZE, at * PAGE_SIZE + PAGE_SIZE);
+  const pick = (key: string) => {
+    setFilter(key);
+    setPage(0);
+  };
+
+  return (
+    <div className="camp-wrap">
+      <div className="camp-tools">
+        <div className="seg" role="tablist" aria-label="Filter campaigns">
+          {FILTERS.map((f) => {
+            const n = campaigns.filter(f.match).length;
+            return (
+              <button
+                key={f.key}
+                type="button"
+                role="tab"
+                aria-selected={filter === f.key}
+                className={filter === f.key ? "on" : ""}
+                onClick={() => pick(f.key)}
+                disabled={f.key !== "all" && n === 0}
+              >
+                {f.label} <span>{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <label className="camp-search">
+          <Icon name="search" size={16} />
+          <input
+            type="search"
+            placeholder="Search niche, format…"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(0);
+            }}
+            aria-label="Search campaigns"
+          />
+        </label>
+      </div>
+
+      {slice.length === 0 ? (
+        <p className="panel-empty">No campaigns match this filter.</p>
+      ) : (
+        <ul className="camp-list" key={`${filter}-${at}-${q}`}>
+          {slice.map((c) => (
+            <CampaignRow key={c.spec.id} campaign={c} deals={byCampaign.get(c.spec.id) ?? []} />
+          ))}
+        </ul>
+      )}
+
+      <nav className="pager" aria-label="Campaign pages">
+        <span className="muted small">
+          {shown.length === 0 ? "0" : `${at * PAGE_SIZE + 1}–${at * PAGE_SIZE + slice.length}`} of {shown.length}
+        </span>
+        <div className="pager-btns">
+          <button type="button" onClick={() => setPage(at - 1)} disabled={at === 0} aria-label="Previous page">
+            <Icon name="arrowLeft" size={16} />
+          </button>
+          {Array.from({ length: pages }, (_, k) => (
+            <button key={k} type="button" className={k === at ? "on" : ""} onClick={() => setPage(k)} aria-current={k === at ? "page" : undefined}>
+              {k + 1}
+            </button>
+          ))}
+          <button type="button" onClick={() => setPage(at + 1)} disabled={at >= pages - 1} aria-label="Next page">
+            <Icon name="arrow" size={16} />
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }

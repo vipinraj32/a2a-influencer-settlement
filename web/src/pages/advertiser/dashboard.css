@@ -268,6 +268,151 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* campaign list: filters, search, scroll area, pages */
+.camp-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.camp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.25rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.seg button span {
+  min-width: 1.4rem;
+  padding: 0 0.35rem;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-align: center;
+}
+.seg button:hover:not(:disabled) {
+  color: var(--accent);
+}
+.seg button.on {
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+.seg button.on span {
+  background: var(--accent-soft);
+}
+.seg button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.camp-search {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  transition: border-color 0.15s;
+}
+.camp-search:focus-within {
+  border-color: var(--accent);
+}
+.camp-search input {
+  width: 11rem;
+  padding: 0.45rem 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-small);
+}
+.camp-wrap .camp-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--blue) 45%, transparent) transparent;
+  animation: camp-in 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes camp-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.pager-btns {
+  display: flex;
+  gap: 0.3rem;
+}
+.pager-btns button {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.pager-btns button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pager-btns button.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--paper);
+  font-weight: 700;
+}
+.pager-btns button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* attention list */
 .todo {
   display: flex;

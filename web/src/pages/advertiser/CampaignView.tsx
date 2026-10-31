@@ -3,16 +3,19 @@ import { Link, useParams } from "react-router";
 import { api } from "../../api";
 import { ComplianceCard, ReviewForm } from "../../components/Compliance";
 import { needsReview } from "../../components/ContentChecks";
+import { A2AChat, ActivityChart, DevClock } from "../../components/CampaignPanels";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
 import { CreatorLink } from "../../components/CreatorLink";
 import { ActionButton, Address, Avatar, CampaignBadge, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
-import { MODEL_LABEL, short, usd } from "../../format";
+import { MODEL_LABEL, humanize, short, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { useMe, useSession } from "../../session";
 import type { CampaignDetail, Deal, DirectoryEntry, WalletBalance } from "../../types";
 import * as wallet from "../../wallet";
+import "./campaign.css";
+import "./dashboard.css";
 
 function spend(deals: Deal[]) {
   const locked = deals.filter((d) => d.funding_tx && d.terms).reduce((s, d) => s + Number(d.terms!.cap), 0);
@@ -287,6 +290,9 @@ export function CampaignView() {
   const events = useResource(() => api.campaignEvents(id), `e:${id}`);
   const directory = useResource(api.directory, "directory");
   const [selected, setSelected] = useState<string | null>(null);
+  const [tab, setTab] = useState<"chat" | "audit">("chat");
+  const [scope, setScope] = useState<"deal" | "campaign">("deal");
+  const [query, setQuery] = useState("");
 
   const reloadAll = () => {
     void campaign.reload();
@@ -297,128 +303,190 @@ export function CampaignView() {
 
   const names = useMemo(() => new Map((directory.data ?? []).map((d: DirectoryEntry) => [d.id, d.name])), [directory.data]);
   const avatars = useMemo(() => new Map((directory.data ?? []).map((d: DirectoryEntry) => [d.id, d.avatar_url])), [directory.data]);
+  const list = deals.data ?? [];
+  // pick the first deal so the chat is never empty when there is something to show
+  useEffect(() => {
+    if (!selected && list.length) setSelected(list[0].id);
+  }, [selected, list]);
 
   if (campaign.error) return <ErrorText error={campaign.error} />;
   if (!campaign.data) return <Spinner />;
   const c = campaign.data;
-  const list = deals.data ?? [];
   const money = spend(list);
   const deal = list.find((d) => d.id === selected) ?? null;
+  const name = (d: Deal) => names.get(d.influencer_id) ?? d.influencer_id;
+  const q = query.trim().toLowerCase();
+  const rows = list.filter((d) => !q || name(d).toLowerCase().includes(q) || d.state.toLowerCase().includes(q));
+  const trail = (events.data ?? []).filter((e) => scope === "campaign" || !deal || e.deal_id === deal.id);
+  const working = c.status === "planning" || c.status === "negotiating";
 
   return (
-    <div className="stack">
-      <div className="page-head">
-        <div>
-          <Link to="/advertiser" className="muted small">
-            ← Campaigns
-          </Link>
-          <h1>
-            {c.spec.advertiser} <span className="muted">{c.spec.brand_handle}</span>
-          </h1>
+    <div className="report">
+      <header className="report-head">
+        <Link to="/advertiser" className="report-back">
+          ← All campaigns
+        </Link>
+        <div className="report-title">
+          <div className="row">
+            <h1>
+              {c.spec.advertiser} <span className="muted">{c.spec.brand_handle}</span>
+            </h1>
+            <CampaignBadge status={c.status} />
+            {working && (
+              <span className="live-chip">
+                <span className="live-dot on" /> Live
+              </span>
+            )}
+          </div>
           <p className="muted small">
-            {c.spec.niche} · {MODEL_LABEL[c.spec.compensation_model] ?? c.spec.compensation_model} · up to {c.spec.max_creators} creators · max {usd(c.spec.max_fixed)}{" "}
-            fixed + {usd(c.spec.max_cpm)} CPM · cap {usd(c.spec.cap_per_creator)} each · {c.spec.max_rounds} rounds · agent policy{" "}
-            {c.spec.agent_policy_version ? `v${c.spec.agent_policy_version}` : "defaults"} · {c.spec.disclosure_policies.join(", ")} ·{" "}
-            <span className="mono">{c.spec.id}</span>
+            {c.spec.niche} · {MODEL_LABEL[c.spec.compensation_model] ?? c.spec.compensation_model} · up to {c.spec.max_creators} creators · max{" "}
+            {usd(c.spec.max_fixed)} fixed + {usd(c.spec.max_cpm)} CPM · cap {usd(c.spec.cap_per_creator)} each · {c.spec.max_rounds} rounds · agent policy{" "}
+            {c.spec.agent_policy_version ? `v${c.spec.agent_policy_version}` : "defaults"} · {c.spec.disclosure_policies.join(", ")}
           </p>
         </div>
-        <CampaignBadge status={c.status} />
-      </div>
-      {c.error && <Notice tone="bad">{c.error}</Notice>}
-      {c.status === "planning" || c.status === "negotiating" ? (
-        <Notice>Your advertiser agent is discovering creator agents and negotiating over A2A. This page updates live.</Notice>
-      ) : null}
+        <DevClock />
+      </header>
 
+      {c.error && <Notice tone="bad">{c.error}</Notice>}
       {c.pending_approval && <SigningPanel campaign={c} names={names} onDone={reloadAll} />}
 
-      <div className="stats">
-        <Stat label="Budget" value={usd(c.spec.budget)} />
-        <Stat label="Locked via HSP" value={usd(money.locked)} />
-        <Stat label="Paid to creators" value={usd(money.paid)} />
-        <Stat label="Refunded" value={usd(money.refunded)} />
-        <Stat label="Still in escrow" value={usd(money.inEscrow)} />
-      </div>
+      <div className="report-grid">
+        <div className="report-main">
+          <section className="report-kpis" aria-label="Money">
+            <Stat label="Budget" value={usd(c.spec.budget)} />
+            <Stat label="Locked via HSP" value={usd(money.locked)} />
+            <Stat label="Paid to creators" value={usd(money.paid)} />
+            <Stat label="Refunded" value={usd(money.refunded)} />
+            <Stat label="Still in escrow" value={usd(money.inEscrow)} />
+          </section>
 
-      <div className="split">
-        <Card title={`Deals (${list.length})`}>
-          {list.length === 0 ? (
-            <Empty>No deals yet.</Empty>
-          ) : (
-            <table className="table selectable">
-              <thead>
-                <tr>
-                  <th>Creator</th>
-                  <th>State</th>
-                  <th>Fixed</th>
-                  <th>CPM</th>
-                  <th>Rounds</th>
-                  <th>Paid</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((d) => (
-                  <tr key={d.id} className={d.id === selected ? "selected" : ""} onClick={() => setSelected(d.id)}>
-                    <td>
-                      <span className="who-cell">
-                        <Avatar src={avatars.get(d.influencer_id)} name={names.get(d.influencer_id) ?? d.influencer_id} size={24} />
-                        <CreatorLink id={d.influencer_id}>{names.get(d.influencer_id) ?? d.influencer_id}</CreatorLink>
-                      </span>
-                    </td>
-                    <td>
-                      <StateBadge state={d.state} />
-                    </td>
-                    <td>{usd(d.terms?.fixed_fee)}</td>
-                    <td>{usd(d.terms?.cpm)}</td>
-                    <td>{d.rounds.length}</td>
-                    <td>{usd(d.payouts.filter((p) => p.kind !== "refund").reduce((s, p) => s + Number(p.amount), 0))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <section className="report-card">{events.data ? <ActivityChart events={events.data} deals={list} /> : <Spinner />}</section>
+
+          <section className="report-card">
+            <div className="report-toolbar">
+              <h2>Deals ({list.length})</h2>
+              <label className="camp-search">
+                <input type="search" placeholder="Search creator or state…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search deals" />
+              </label>
+            </div>
+            {list.length === 0 ? (
+              <Empty>{working ? "Your agent is finding creator agents. Deals appear here as soon as talks start." : "No deals for this campaign."}</Empty>
+            ) : (
+              <div className="report-table">
+                <table className="table selectable">
+                  <thead>
+                    <tr>
+                      <th>Creator</th>
+                      <th>State</th>
+                      <th className="num">Fixed</th>
+                      <th className="num">CPM</th>
+                      <th className="num">Cap</th>
+                      <th className="num">Rounds</th>
+                      <th className="num">Paid</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((d) => (
+                      <tr key={d.id} className={d.id === selected ? "selected" : ""} onClick={() => setSelected(d.id)}>
+                        <td>
+                          <span className="who-cell">
+                            <Avatar src={avatars.get(d.influencer_id)} name={name(d)} size={24} />
+                            <CreatorLink id={d.influencer_id}>{name(d)}</CreatorLink>
+                          </span>
+                        </td>
+                        <td>
+                          <StateBadge state={d.state} />
+                        </td>
+                        <td className="num">{usd(d.terms?.fixed_fee)}</td>
+                        <td className="num">{usd(d.terms?.cpm)}</td>
+                        <td className="num">{usd(d.terms?.cap)}</td>
+                        <td className="num">{d.rounds.length}</td>
+                        <td className="num">{usd(d.payouts.filter((p) => p.kind !== "refund").reduce((s, p) => s + Number(p.amount), 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {deal && (
+            <DealDetail
+              deal={deal}
+              title={
+                <span>
+                  <CreatorLink id={deal.influencer_id}>{name(deal)}</CreatorLink> <span className="muted small mono">{deal.influencer_id}</span>
+                </span>
+              }
+              actions={
+                <>
+                  {deal.state === "AWAITING_CHECKOUT" && deal.payment_url && (
+                    <a className="btn btn-primary" href={deal.payment_url} target="_blank" rel="noreferrer">
+                      Pay in HSP checkout
+                    </a>
+                  )}
+                  {deal.state === "VERIFIED" && (c.spec.review_required || needsReview(deal.proof?.content)) && <ReviewForm dealId={deal.id} onDone={reloadAll} />}
+                  {deal.state === "VERIFIED" && <DisputeForm dealId={deal.id} />}
+                </>
+              }
+            />
           )}
-        </Card>
 
-        {deal ? (
-          <DealDetail
-            deal={deal}
-            title={
-              <span>
-                <CreatorLink id={deal.influencer_id}>{names.get(deal.influencer_id) ?? deal.influencer_id}</CreatorLink>{" "}
-                <span className="muted small mono">{deal.influencer_id}</span>
-              </span>
-            }
-            actions={
-              <>
-                {deal.state === "AWAITING_CHECKOUT" && deal.payment_url && (
-                  <a className="btn btn-primary" href={deal.payment_url} target="_blank" rel="noreferrer">
-                    Pay in HSP checkout
-                  </a>
-                )}
-                {deal.state === "VERIFIED" && (c.spec.review_required || needsReview(deal.proof?.content)) && <ReviewForm dealId={deal.id} onDone={reloadAll} />}
-                {deal.state === "VERIFIED" && <DisputeForm dealId={deal.id} />}
-              </>
-            }
-          />
-        ) : (
-          <Card title="Audit trail">
-            <p className="muted small">Select a deal for its negotiation, signed terms, payment, proof and payouts.</p>
-            {events.data ? <Timeline events={events.data} limit={40} /> : <Spinner />}
+          <ComplianceCard campaignId={c.spec.id} names={names} />
+
+          <Card title="Content requirements">
+            <Requirements deliverable={c.spec.deliverable} min={c.spec.min_duration_seconds} max={c.spec.max_duration_seconds} text={c.spec.requirements} />
           </Card>
-        )}
+
+          <Assistant />
+        </div>
+
+        <aside className="report-side" aria-label="Agent conversation and audit trail">
+          <div className="side-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>
+              A2A chat
+            </button>
+            <button type="button" role="tab" aria-selected={tab === "audit"} className={tab === "audit" ? "on" : ""} onClick={() => setTab("audit")}>
+              Audit trail <span>{trail.length}</span>
+            </button>
+          </div>
+
+          {list.length > 0 && (
+            <label className="side-pick">
+              <span className="sr-only">Deal</span>
+              <select value={selected ?? ""} onChange={(e) => setSelected(e.target.value)}>
+                {list.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {name(d)} · {humanize(d.state)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <div className="side-body">
+            {tab === "chat" ? (
+              deal ? (
+                <A2AChat deal={deal} creator={name(deal)} avatar={avatars.get(deal.influencer_id)} />
+              ) : (
+                <Empty>{working ? "Waiting for the first creator agent to answer…" : "No conversations for this campaign."}</Empty>
+              )
+            ) : (
+              <>
+                <div className="seg side-scope">
+                  <button type="button" className={scope === "deal" ? "on" : ""} onClick={() => setScope("deal")} disabled={!deal}>
+                    This deal
+                  </button>
+                  <button type="button" className={scope === "campaign" ? "on" : ""} onClick={() => setScope("campaign")}>
+                    Whole campaign
+                  </button>
+                </div>
+                {events.data ? <Timeline events={trail} limit={80} /> : <Spinner />}
+              </>
+            )}
+          </div>
+        </aside>
       </div>
-
-      <ComplianceCard campaignId={c.spec.id} names={names} />
-
-      <Card title="Content requirements">
-        <Requirements
-          deliverable={c.spec.deliverable}
-          min={c.spec.min_duration_seconds}
-          max={c.spec.max_duration_seconds}
-          text={c.spec.requirements}
-        />
-      </Card>
-
-      <Assistant />
     </div>
   );
 }
