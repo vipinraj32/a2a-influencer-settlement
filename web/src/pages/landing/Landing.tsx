@@ -105,9 +105,10 @@ function Header({ direction, signedIn, advertiserStart, influencerStart }: { dir
 }
 
 const SLIDES = [
-  { img: "hero-agents.webp", alt: "Campaign dashboard with creators at different negotiation rounds, sample data", eyebrow: "Agent negotiation", title: "Your agent talks to every creator’s agent", link: "#negotiate" },
-  { img: "hero-proof.webp", alt: "Content agent report on brand mentions and logo visibility, sample data", eyebrow: "Content agent", title: "Every video is checked before payout", link: "#verify" },
-  { img: "hero-escrow.webp", alt: "Escrow view with payment mandate and payout split, sample testnet data", eyebrow: "Escrow · testnet", title: "Funds wait in escrow until proof is in", link: "#payouts" },
+  { img: "login-visual.webp", alt: "ZyroXQ with HashKey Chain: a campaign performance table and engagement chart, sample data", eyebrow: "ZyroXQ + HashKey Chain · testnet", title: "Creator deals built for HashKey Chain", text: "Agents agree the terms, escrow holds the payment and proof releases it.", link: "#product", pos: "center top" },
+  { img: "hero-agents.webp", alt: "Campaign dashboard with creators at different negotiation rounds, sample data", eyebrow: "Agent negotiation", title: "Your agent talks to every creator’s agent", text: "Offers go out in parallel. Your limits decide every reply.", link: "#negotiate" },
+  { img: "hero-proof.webp", alt: "Content agent report on brand mentions and logo visibility, sample data", eyebrow: "Content agent", title: "Every video is checked before payout", text: "Mentions, tags and length are checked against your brief.", link: "#verify" },
+  { img: "hero-escrow.webp", alt: "Escrow view with payment mandate and payout split, sample testnet data", eyebrow: "Escrow · testnet", title: "Funds wait in escrow until proof is in", text: "Fixed fee first, performance fee later, the rest refunded.", link: "#payouts" },
 ];
 
 const SLIDE_MS = 6000;
@@ -150,12 +151,13 @@ function HeroCarousel() {
     >
       {SLIDES.map((s, k) => (
         <div key={s.img} className={`lp-slide ${k === i ? "lp-on" : ""}`} role="group" aria-roledescription="slide" aria-label={`${k + 1} of ${n}`} aria-hidden={k !== i}>
-          <img src={`${IMG}/${s.img}`} alt={s.alt} loading={k === 0 ? "eager" : "lazy"} />
+          <img src={`${IMG}/${s.img}`} alt={s.alt} loading={k === 0 ? "eager" : "lazy"} style={"pos" in s ? { objectPosition: s.pos } : undefined} />
           <div className="lp-slide-copy">
             <p className="lp-slide-eyebrow">{s.eyebrow}</p>
             <h2>{s.title}</h2>
+            <p className="lp-slide-text">{s.text}</p>
             <a href={s.link} tabIndex={k === i ? 0 : -1}>
-              See more <Icon name="arrow" size={16} />
+              Learn more
             </a>
           </div>
         </div>
@@ -170,10 +172,10 @@ function HeroCarousel() {
         </div>
         <div className="lp-arrows">
           <button type="button" onClick={() => go(-1)} aria-label="Previous slide">
-            <Icon name="arrowLeft" size={26} />
+            <Icon name="arrowLeft" size={20} />
           </button>
           <button type="button" onClick={() => go(1)} aria-label="Next slide">
-            <Icon name="arrow" size={26} />
+            <Icon name="arrow" size={20} />
           </button>
         </div>
       </div>
@@ -422,7 +424,7 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
     title: "See where every dollar went",
     text: "Track what is locked in escrow, what was paid and what was refunded. Views come from the platform API, never from a creator’s own report.",
     img: "feat-measure.webp",
-    alt: "Campaign results with escrow totals and a views-per-day chart, sample data",
+    alt: "Campaign report with verified views per day, payouts and refunds by creator, sample data",
     status: "beta",
   },
   {
@@ -604,6 +606,27 @@ function BackToTop({ direction }: { direction: Direction }) {
   );
 }
 
+/** Hero spotlight and slider parallax: pointer position goes into CSS variables, no re-render. */
+function trackPointer(e: ReactPointerEvent<HTMLElement>) {
+  if (e.pointerType !== "mouse") return;
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width;
+  const y = (e.clientY - r.top) / r.height;
+  el.style.setProperty("--mx", `${(x * 100).toFixed(1)}%`);
+  el.style.setProperty("--my", `${(y * 100).toFixed(1)}%`);
+  el.style.setProperty("--px", (x * 2 - 1).toFixed(3));
+  el.style.setProperty("--py", (y * 2 - 1).toFixed(3));
+  el.classList.add("lp-hover");
+}
+
+function resetPointer(e: ReactPointerEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  el.style.setProperty("--px", "0");
+  el.style.setProperty("--py", "0");
+  el.classList.remove("lp-hover");
+}
+
 export function Landing() {
   const { me } = useSession();
   const signedIn = !!me;
@@ -635,12 +658,8 @@ export function Landing() {
 
           <main id="main">
             {/* Hero */}
-            <section className="lp-hero" aria-labelledby="hero-title">
+            <section className="lp-hero" aria-labelledby="hero-title" onPointerMove={trackPointer} onPointerLeave={resetPointer}>
               <motion.div className="lp-hero-copy" initial={{ opacity: 0, y: 32 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, ease: EASE }}>
-                <p className="lp-pill">
-                  <span className="lp-pill-dot" aria-hidden />
-                  HashKey A2A track · testnet
-                </p>
                 <h1 id="hero-title">
                   Your agents negotiate. <span className="lp-hl">Your rules decide.</span>
                 </h1>

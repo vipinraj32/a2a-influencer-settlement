@@ -22,7 +22,7 @@
 .dash-hero h1 {
   margin: 0.2rem 0 0.4rem;
   color: var(--paper);
-  font-size: clamp(1.6rem, 2.6vw, 2.2rem);
+  font-size: var(--fs-h4);
   font-weight: 700;
   line-height: 1.15;
   letter-spacing: -0.02em;
@@ -30,7 +30,7 @@
 .dash-eyebrow {
   margin: 0;
   color: var(--blue);
-  font-size: 0.78rem;
+  font-size: var(--fs-small);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -81,7 +81,6 @@
     border-color 0.2s;
 }
 .kpi:hover {
-  transform: translateY(-2px);
   border-color: color-mix(in srgb, var(--blue) 45%, var(--border));
 }
 .kpi-ic {
@@ -104,10 +103,10 @@
 }
 .kpi-label {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--fs-small);
 }
 .kpi-value {
-  font-size: 1.65rem;
+  font-size: var(--fs-h5);
   font-weight: 700;
   line-height: 1.15;
   letter-spacing: -0.01em;
@@ -115,7 +114,7 @@
 }
 .kpi-foot {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--fs-small);
 }
 
 /* panels */
@@ -146,7 +145,7 @@
 }
 .panel-head h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: var(--fs-p);
   font-weight: 700;
 }
 .panel-link {
@@ -154,7 +153,7 @@
   align-items: center;
   gap: 0.3rem;
   color: var(--accent);
-  font-size: 0.88rem;
+  font-size: var(--fs-small);
   font-weight: 600;
 }
 .panel-link:hover {
@@ -168,7 +167,7 @@
   gap: 0.45rem;
   margin: 0;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: var(--fs-p);
   line-height: 1.5;
 }
 .count {
@@ -180,7 +179,7 @@
   border-radius: 99px;
   background: var(--orange);
   color: var(--paper);
-  font-size: 0.78rem;
+  font-size: var(--fs-small);
   font-weight: 700;
 }
 .dash ul,
@@ -213,7 +212,6 @@
   text-decoration: none;
   border-color: color-mix(in srgb, var(--blue) 55%, var(--border));
   background: color-mix(in srgb, var(--blue) 4%, var(--surface));
-  transform: translateX(2px);
 }
 .camp-top {
   display: flex;
@@ -262,7 +260,7 @@
   flex-wrap: wrap;
   gap: 0.35rem 1.25rem;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--fs-small);
 }
 .camp-meta b {
   color: var(--text);
@@ -312,10 +310,10 @@
   align-items: flex-start;
   gap: 0.2rem;
   min-width: 0;
-  font-size: 0.85rem;
+  font-size: var(--fs-small);
 }
 .todo-body strong {
-  font-size: 0.92rem;
+  font-size: var(--fs-p);
   font-weight: 600;
 }
 
@@ -330,7 +328,7 @@
   grid-template-columns: 7.5rem minmax(0, 1fr) 2rem;
   align-items: center;
   gap: 0.75rem;
-  font-size: 0.87rem;
+  font-size: var(--fs-small);
 }
 .pipeline-label {
   color: var(--muted);
@@ -351,7 +349,7 @@
   flex-direction: column;
 }
 .wallet-body strong {
-  font-size: 1.25rem;
+  font-size: var(--fs-h6);
   font-weight: 700;
 }
 .wallet-ic {
@@ -385,7 +383,6 @@
 .creator-card:hover {
   text-decoration: none;
   border-color: var(--blue);
-  transform: translateY(-2px);
 }
 .creator-card > span {
   display: flex;

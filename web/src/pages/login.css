@@ -37,7 +37,7 @@
   border-radius: 99px;
   background: rgb(5 23 48 / 70%);
   color: var(--paper);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .auth-main {
@@ -84,7 +84,7 @@
   }
 }
 .auth-card h2 {
-  font-size: 30px;
+  font-size: var(--fs-h4);
   font-weight: 800;
   letter-spacing: -0.02em;
 }
@@ -102,7 +102,7 @@
   border-radius: 8px;
   background: var(--orange);
   color: var(--paper);
-  font-size: 17px;
+  font-size: var(--fs-p);
   font-weight: 700;
   box-shadow: 0 12px 24px -14px var(--orange);
   transition:
@@ -113,8 +113,6 @@
 .auth-google:hover {
   text-decoration: none;
   background: color-mix(in srgb, var(--orange) 88%, var(--ink));
-  transform: translateY(-2px);
-  box-shadow: 0 16px 28px -14px var(--orange);
 }
 .auth-g {
   display: grid;
@@ -129,14 +127,14 @@
   padding-top: 16px;
   border-top: 1px solid var(--border);
   color: var(--accent);
-  font-size: 14px;
+  font-size: var(--fs-small);
   font-weight: 600;
   text-align: center;
 }
 .auth-note {
   margin: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-small);
   text-align: center;
 }
 
