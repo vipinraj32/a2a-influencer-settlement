@@ -63,4 +63,5 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 "tests/test_youtube_profile.py" = ["F811"]
 "tests/test_niche.py" = ["F811"]
 "tests/test_proof_review.py" = ["F811"]
+"tests/test_negotiation_stream.py" = ["F811"]
 "tests/test_content_agent.py" = ["F811"]  # reuses test_e2e's fixtures by importing them

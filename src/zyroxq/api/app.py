@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.middleware.sessions import SessionMiddleware
 from web3 import Web3
 
@@ -40,6 +40,7 @@ from ..auth.wallet_link import link_message
 from ..clock import Clock
 from ..compliance import DISCLAIMER, campaign_problems
 from ..config import Settings, get_settings
+from ..feedback import FeedbackIn, LessonUpdate, build_feedback, performance_row, performance_summary
 from ..mcp_servers.server import build_mcp
 from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentCheck, ContentScope, Deal, DealState, RateCard, User, new_id
 from ..services.context import AppContext, build_context, chat_model
@@ -148,6 +149,24 @@ class Question(BaseModel):
 
 class BriefIn(BaseModel):
     brief: str = Field(min_length=10, max_length=2000)
+
+
+class BriefDraft(BaseModel):
+    """What the LLM fills from a brief. Kept flat and unconstrained so the structured-output schema stays small;
+    CampaignCreate applies the real limits afterwards."""
+
+    advertiser: str = Field(description="brand or company name")
+    brand_handle: str = Field(description="the brand's handle starting with @, e.g. @acme")
+    niche: str = Field(description="creator niche, one or two words, e.g. fitness")
+    budget: float = Field(description="total campaign budget in USD")
+    max_creators: int
+    compensation_model: Literal["fixed", "cpm", "hybrid"]
+    max_fixed: float = Field(description="highest fixed fee per creator in USD; 0 for a pure CPM campaign")
+    max_cpm: float = Field(description="highest USD paid per 1,000 views; 0 for a fixed-fee campaign")
+    cap_per_creator: float = Field(description="most one creator can earn in USD, at least max_fixed")
+    deliverable: Literal["youtube_short", "youtube_video"]
+    publish_within_days: int
+    requirements: str = Field(description="what the video must show or say, in the brief's words")
 
 
 class AdvertiserProfileIn(BaseModel):
@@ -568,10 +587,25 @@ def create_app(
         """LLM drafts the campaign form from free text. The draft is validated, and the human submits it."""
         if state.ctx.llm is None:
             raise HTTPException(400, "Set ANTHROPIC_API_KEY to parse briefs; fill the form manually otherwise")
-        draft = await state.ctx.llm.with_structured_output(CampaignCreate, method="json_schema").ainvoke(
-            f"Turn this advertiser brief into campaign parameters. Use USD with 2 decimals. Brief:\n{body.brief}"
-        )
-        return CampaignCreate.model_validate(draft.model_dump()).model_dump(mode="json")
+        try:
+            draft = await state.ctx.llm.with_structured_output(BriefDraft, method="json_schema").ainvoke(
+                f"Turn this advertiser brief into campaign parameters. Use USD with 2 decimals. Brief:\n{body.brief}"
+            )
+        except Exception as e:  # provider/network errors: the form can still be filled by hand
+            log.warning("brief parsing failed: %s", e)
+            raise HTTPException(502, "Could not read the brief right now; fill the form manually") from e
+        data: dict[str, Any] = draft.model_dump()
+        for k in ("budget", "max_fixed", "max_cpm", "cap_per_creator"):
+            data[k] = Decimal(str(data[k])).quantize(Decimal("0.01"))
+        handle = "".join(ch for ch in data["brand_handle"] if ch.isalnum() or ch in "_.")
+        data["brand_handle"] = f"@{handle[:40]}"
+        data["niche"] = data["niche"].strip().lower()[:40]
+        data["requirements"] = data["requirements"][:MAX_REQUIREMENTS_CHARS]
+        data["brief"] = body.brief
+        try:
+            return CampaignCreate.model_validate(data).model_dump(mode="json")
+        except ValidationError as e:
+            raise HTTPException(422, "; ".join(err["msg"] for err in e.errors())) from e
 
     @app.get("/api/campaigns")
     async def list_campaigns(who: Principal) -> list[dict[str, Any]]:
@@ -673,6 +707,139 @@ def create_app(
         deal = await readable_deal(deal_id, who)
         spec = (await state.deals.campaign(deal.campaign_id)).spec
         return state.deals.negotiation_view(deal, spec)
+
+    # ---- live negotiation: transcript replay, stream, cancel, feedback -------------------------
+    # A negotiation is a deal's A2A exchange. It starts when the campaign launches (POST /api/campaigns) and runs once
+    # in the campaign runner; these endpoints only read it, so a reconnecting browser can never start it again.
+
+    def resume_after(request: Request, after: int) -> int:
+        last = request.headers.get("last-event-id", "")
+        return int(last) if last.isdigit() else after
+
+    @app.get("/api/negotiations/{deal_id}/events")
+    async def negotiation_events(deal_id: str, who: Principal, after: int = 0) -> list[dict[str, Any]]:
+        """The stored transcript after `after`: what a refreshed page renders before the stream takes over."""
+        await readable_deal(deal_id, who)
+        return await state.ctx.store.list_negotiation_events(deal_id, after)
+
+    @app.get("/api/negotiations/{deal_id}/stream")
+    async def negotiation_stream(deal_id: str, request: Request, who: Principal, after: int = 0) -> StreamingResponse:
+        """SSE: replays stored events after Last-Event-ID (or `after`), then pushes new ones live. Every frame carries
+        `id: <event_id>`, so EventSource resumes where it stopped; duplicates are dropped by event_id. The stream
+        closes after `negotiation_completed`."""
+        deal = await readable_deal(deal_id, who)
+        start = resume_after(request, after)
+
+        def frame(e: dict[str, Any]) -> str:
+            return f"id: {e['event_id']}\ndata: {json.dumps(e, default=str)}\n\n"
+
+        async def events() -> AsyncIterator[str]:
+            async with state.ctx.bus.subscribe() as queue:  # subscribe before reading the store, so nothing falls in between
+                yield "retry: 3000\n\n"
+                sent = start
+                stored = await state.ctx.store.list_negotiation_events(deal_id, sent)
+                for e in stored:
+                    yield frame(e)
+                    sent = e["event_id"]
+                    if e["event_type"] == "negotiation_completed":
+                        return
+                if sent == 0 and not stored and deal.state != DealState.NEGOTIATING:
+                    yield f"data: {json.dumps({'event_type': 'negotiation_legacy', 'negotiation_id': deal_id})}\n\n"  # ended before transcripts existed
+                    return
+                while not await request.is_disconnected():
+                    try:
+                        live = await asyncio.wait_for(queue.get(), timeout=15)
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if live.get("type") != "negotiation" or live.get("deal_id") != deal_id or live["event"]["event_id"] <= sent:
+                        continue
+                    # A gap means the queue overflowed: fill it from the store, in order
+                    batch = [live["event"]] if live["event"]["event_id"] == sent + 1 else await state.ctx.store.list_negotiation_events(deal_id, sent)
+                    for e in batch:
+                        yield frame(e)
+                        sent = e["event_id"]
+                        if e["event_type"] == "negotiation_completed":
+                            return
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/negotiations/{deal_id}/cancel")
+    async def cancel_negotiation(deal_id: str, user: AdvertiserUser) -> dict[str, Any]:
+        deal = await readable_deal(deal_id, user)
+        if not await state.deals.cancel_negotiation(deal, user.id):
+            raise HTTPException(409, "this negotiation has already ended")
+        return {"status": "cancelling"}
+
+    async def feedback_party(deal_id: str, user: User) -> tuple[Deal, str]:
+        deal = await readable_deal(deal_id, user)
+        return deal, ("influencer" if deal.influencer_id == user.id else "advertiser")
+
+    @app.get("/api/negotiations/{deal_id}/feedback")
+    async def my_negotiation_feedback(deal_id: str, user: CurrentUser) -> dict[str, Any] | None:
+        deal, party = await feedback_party(deal_id, user)
+        mine = [f for f in await state.ctx.store.list_feedback(deal_id=deal.id) if f["party"] == party]
+        return {k: v for k, v in mine[-1].items() if k != "transcript"} if mine else None
+
+    @app.post("/api/negotiations/{deal_id}/feedback", status_code=201)
+    async def submit_negotiation_feedback(deal_id: str, body: FeedbackIn, user: CurrentUser) -> dict[str, Any]:
+        """Each party rates its own agent once the negotiation ended. The extracted lesson waits for the owner's approval."""
+        deal, party = await feedback_party(deal_id, user)
+        if deal.state == DealState.NEGOTIATING:
+            raise HTTPException(409, "the negotiation is still running")
+        spec = (await state.deals.campaign(deal.campaign_id)).spec
+        floors = None
+        if party == "influencer" and (me := await state.ctx.registry.identity(user.id)) is not None:
+            policy = me.policy or InfluencerPolicy.from_rate_card(me.profile.rate_card, me.persona)  # type: ignore[arg-type]
+            floors = (policy.hard.min_fixed_fee, policy.hard.min_cpm)
+        transcript = await state.ctx.store.list_negotiation_events(deal.id)
+        record, lesson = build_feedback(body, deal=deal, spec=spec, role=party, user_id=user.id, transcript=transcript,  # type: ignore[arg-type]
+                                        floors=floors, now=state.ctx.clock.now())  # fmt: skip
+        for old in await state.ctx.store.list_feedback(deal_id=deal.id):  # resubmitting replaces the earlier lesson too
+            if old["party"] == party and old.get("lesson_id") and (prev := await state.ctx.store.get_lesson(old["lesson_id"])):
+                await state.ctx.store.save_lesson({**prev, "status": "dismissed", "reviewed_at": state.ctx.clock.now().isoformat()})
+        await state.ctx.store.save_feedback(record)
+        if lesson:
+            await state.ctx.store.save_lesson(lesson)
+        await state.deals.audit(deal.campaign_id, deal.id, "human", "negotiation_feedback", party=party, rating=body.rating, category=body.category)
+        return {"feedback": {k: v for k, v in record.items() if k != "transcript"}, "lesson": lesson}
+
+    @app.get("/api/me/agent-lessons")
+    async def my_lessons(user: CurrentUser) -> list[dict[str, Any]]:
+        return await state.ctx.store.list_lessons(user.id, user.role)
+
+    @app.put("/api/me/agent-lessons/{lesson_id}")
+    async def review_lesson(lesson_id: str, body: LessonUpdate, user: CurrentUser) -> dict[str, Any]:
+        """The owner approves (optionally rewording) or dismisses a lesson. Only approved lessons reach the agent."""
+        lesson = await state.ctx.store.get_lesson(lesson_id)
+        if lesson is None or lesson["owner_id"] != user.id:
+            raise HTTPException(404, "lesson not found")
+        lesson = {**lesson, "status": body.status, "reviewed_at": state.ctx.clock.now().isoformat()}
+        if body.guidance:
+            lesson["guidance"] = body.guidance.strip()
+        await state.ctx.store.save_lesson(lesson)
+        return lesson
+
+    @app.get("/api/me/agent-performance")
+    async def my_agent_performance(user: CurrentUser) -> dict[str, Any]:
+        """Negotiation metrics for the user's own agent, from stored negotiations and feedback only."""
+        role = user.role
+        rows = {r["deal_id"]: r for r in await state.ctx.store.list_performance(user.id, role)}
+        # Negotiations that ended before agent_performance existed are added from the stored deals
+        for c in await state.ctx.store.list_campaigns() if role == "advertiser" else []:
+            if c.spec.owner_id == user.id:
+                for d in await state.ctx.store.list_deals(c.spec.id):
+                    if d.id not in rows and (row := performance_row(d, c.spec)):
+                        await state.ctx.store.save_performance(row)
+                        rows[d.id] = row
+        if role == "influencer":
+            for d in await state.ctx.store.list_deals():
+                if d.influencer_id == user.id and d.id not in rows and (c := await state.ctx.store.get_campaign(d.campaign_id)):
+                    if row := performance_row(d, c.spec):
+                        await state.ctx.store.save_performance(row)
+                        rows[d.id] = row
+        feedback = [f for f in await state.ctx.store.list_feedback(user_id=user.id) if f["party"] == role]
+        return performance_summary(list(rows.values()), feedback, role)
 
     @app.post("/api/deals/{deal_id}/compliance/review")
     async def compliance_review(deal_id: str, body: ReviewIn, user: AdvertiserUser) -> dict[str, Any]:

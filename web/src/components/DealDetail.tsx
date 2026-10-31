@@ -5,6 +5,7 @@ import { useLiveEvents, useResource } from "../live";
 import { useMe, useSession } from "../session";
 import type { Deal } from "../types";
 import { ContentReportView } from "./ContentChecks";
+import { LiveNegotiation } from "./LiveNegotiation";
 import { NegotiationRoom } from "./NegotiationRoom";
 import { ProofHistory, ProofReviewCard } from "./ProofReview";
 import { Timeline } from "./Timeline";
@@ -12,7 +13,8 @@ import { Address, Card, Empty, StateBadge } from "./ui";
 
 /** Everything about one deal, shared by the advertiser and influencer views. `actions` renders role-specific buttons. */
 export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactNode; actions?: ReactNode }) {
-  const role = useMe().user.role;
+  const me = useMe().user;
+  const role = me.role;
   const { status } = useSession();
   const explorer = status?.escrow.simulated ? undefined : status?.chain.explorer_url;
   const events = useResource(() => api.dealEvents(deal.id), deal.id);
@@ -33,6 +35,13 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
             ))}
           </ul>
         </div>
+      )}
+
+      {role === "influencer" && (
+        <>
+          <h3>Conversation with the advertiser's agent</h3>
+          <LiveNegotiation key={deal.id} deal={deal} viewer="influencer" creator={me.name} avatar={me.picture} brand={deal.terms?.advertiser ?? "Advertiser"} />
+        </>
       )}
 
       <h3>Negotiation room</h3>

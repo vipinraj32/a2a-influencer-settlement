@@ -16,6 +16,11 @@ class MemoryStore:
         self._reservations: dict[str, tuple[str, Decimal]] = {}  # deal → (campaign, amount)
         self._versions: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._decisions: list[dict[str, Any]] = []
+        self._negotiation_events: dict[str, list[dict[str, Any]]] = {}
+        self._rounds: dict[tuple[str, int], dict[str, Any]] = {}
+        self._feedback: dict[tuple[str, str], dict[str, Any]] = {}  # (deal, party) → record
+        self._performance: dict[str, dict[str, Any]] = {}
+        self._lessons: dict[str, dict[str, Any]] = {}
 
     async def save_campaign(self, campaign: Campaign) -> None:
         self._campaigns[campaign.spec.id] = campaign.model_copy(deep=True)
@@ -102,3 +107,43 @@ class MemoryStore:
 
     async def list_decisions(self, deal_id: str, party: str | None = None) -> list[dict[str, Any]]:
         return [dict(r) for r in self._decisions if r["deal_id"] == deal_id and (party is None or r["party"] == party)]
+
+    async def add_negotiation_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        events = self._negotiation_events.setdefault(event["negotiation_id"], [])
+        saved = {**event, "event_id": len(events) + 1}
+        events.append(saved)
+        return dict(saved)
+
+    async def list_negotiation_events(self, deal_id: str, after: int = 0) -> list[dict[str, Any]]:
+        return [dict(e) for e in self._negotiation_events.get(deal_id, []) if e["event_id"] > after]
+
+    async def add_negotiation_round(self, row: dict[str, Any]) -> None:
+        self._rounds[(row["deal_id"], row["round"])] = dict(row)
+
+    async def list_negotiation_rounds(self, deal_id: str) -> list[dict[str, Any]]:
+        return sorted((dict(r) for (d, _), r in self._rounds.items() if d == deal_id), key=lambda r: r["round"])
+
+    async def save_feedback(self, record: dict[str, Any]) -> None:
+        self._feedback[(record["deal_id"], record["party"])] = dict(record)
+
+    async def list_feedback(self, *, deal_id: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
+        rows = [dict(f) for f in self._feedback.values() if (deal_id is None or f["deal_id"] == deal_id) and (user_id is None or f["user_id"] == user_id)]
+        return sorted(rows, key=lambda f: f["created_at"])
+
+    async def save_performance(self, row: dict[str, Any]) -> None:
+        self._performance[row["deal_id"]] = dict(row)
+
+    async def list_performance(self, user_id: str, role: str) -> list[dict[str, Any]]:
+        column = "advertiser_id" if role == "advertiser" else "influencer_id"
+        return sorted((dict(r) for r in self._performance.values() if r[column] == user_id), key=lambda r: r["ended_at"] or "")
+
+    async def save_lesson(self, lesson: dict[str, Any]) -> None:
+        self._lessons[lesson["id"]] = dict(lesson)
+
+    async def get_lesson(self, lesson_id: str) -> dict[str, Any] | None:
+        lesson = self._lessons.get(lesson_id)
+        return dict(lesson) if lesson else None
+
+    async def list_lessons(self, owner_id: str, role: str, status: str | None = None) -> list[dict[str, Any]]:
+        rows = [dict(x) for x in self._lessons.values() if x["owner_id"] == owner_id and x["role"] == role and (status is None or x["status"] == status)]
+        return sorted(rows, key=lambda x: x["created_at"], reverse=True)

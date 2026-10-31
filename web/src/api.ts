@@ -1,4 +1,4 @@
-import type { AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, ContentCheck, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
+import type { AgentLesson, AgentPerformance, FeedbackInput, NegotiationEvent, NegotiationFeedback, AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, ContentCheck, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -93,6 +93,17 @@ export const api = {
 
   influencerDeals: () => get<InfluencerDeal[]>("/api/influencer/deals"),
   influencerInbox: () => get<Record<string, unknown>[]>("/api/influencer/inbox"),
+
+  negotiationEvents: (id: string, after = 0) => get<NegotiationEvent[]>(`/api/negotiations/${encodeURIComponent(id)}/events?after=${after}`),
+  negotiationStreamUrl: (id: string, after = 0) => `/api/negotiations/${encodeURIComponent(id)}/stream?after=${after}`,
+  cancelNegotiation: (id: string) => post<{ status: string }>(`/api/negotiations/${encodeURIComponent(id)}/cancel`),
+  myFeedback: (id: string) => get<NegotiationFeedback | null>(`/api/negotiations/${encodeURIComponent(id)}/feedback`),
+  sendFeedback: (id: string, body: FeedbackInput) =>
+    post<{ feedback: NegotiationFeedback; lesson: AgentLesson | null }>(`/api/negotiations/${encodeURIComponent(id)}/feedback`, body),
+  lessons: () => get<AgentLesson[]>("/api/me/agent-lessons"),
+  reviewLesson: (id: string, status: "approved" | "dismissed", guidance?: string) =>
+    put<AgentLesson>(`/api/me/agent-lessons/${encodeURIComponent(id)}`, { status, guidance }),
+  agentPerformance: () => get<AgentPerformance>("/api/me/agent-performance"),
 
   ask: (question: string) => post<{ answer: string }>("/api/assistant", { question }),
   advance: (hours: number) => post<{ clock_offset_hours: number; actions: number }>("/api/dev/advance", { hours }),

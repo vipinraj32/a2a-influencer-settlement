@@ -99,3 +99,36 @@ async def test_versioned_documents_and_decisions(store):
                                   "at": datetime.now(UTC).isoformat(), "action": "ACCEPT"})  # fmt: skip
     assert {d["party"] for d in await store.list_decisions(deal)} == {"advertiser", "influencer"}
     assert [d["party"] for d in await store.list_decisions(deal, "influencer")] == ["influencer"]
+
+
+async def test_negotiation_transcript_feedback_and_lessons(store):
+    deal_id, now = new_id("DEAL"), datetime.now(UTC).isoformat()
+    base = {"negotiation_id": deal_id, "campaign_id": "CMP-x", "agent_role": "advertiser", "timestamp": now}
+    first = await store.add_negotiation_event({**base, "event_type": "negotiation_started"})
+    second = await store.add_negotiation_event({**base, "event_type": "message_completed", "message_id": "MSG-1", "content": "Offer."})
+    assert (first["event_id"], second["event_id"]) == (1, 2)
+    assert [e["event_id"] for e in await store.list_negotiation_events(deal_id)] == [1, 2]
+    assert [e["message_id"] for e in await store.list_negotiation_events(deal_id, after=1)] == ["MSG-1"]
+
+    await store.add_negotiation_round({"deal_id": deal_id, "campaign_id": "CMP-x", "round": 1, "at": now, "reply": {"kind": "counter"}})
+    assert [r["round"] for r in await store.list_negotiation_rounds(deal_id)] == [1]
+
+    user = new_id("USR")
+    fb = {"id": new_id("FBK"), "deal_id": deal_id, "campaign_id": "CMP-x", "party": "advertiser", "user_id": user, "rating": 2, "created_at": now}
+    await store.save_feedback(fb)
+    await store.save_feedback({**fb, "id": new_id("FBK"), "rating": 4})  # one per deal and party
+    assert [f["rating"] for f in await store.list_feedback(deal_id=deal_id)] == [4]
+    assert len(await store.list_feedback(user_id=user)) == 1
+
+    row = {"deal_id": deal_id, "campaign_id": "CMP-x", "advertiser_id": user, "influencer_id": "USR-ava", "outcome": "agreed", "ended_at": now, "rounds": 2}
+    await store.save_performance(row)
+    await store.save_performance({**row, "rounds": 3})
+    assert [r["rounds"] for r in await store.list_performance(user, "advertiser")] == [3]
+    assert [r["deal_id"] for r in await store.list_performance("USR-ava", "influencer") if r["deal_id"] == deal_id] == [deal_id]
+
+    lesson = {"id": new_id("LSN"), "owner_id": user, "role": "advertiser", "status": "pending", "feedback_id": fb["id"], "created_at": now, "guidance": "g"}
+    await store.save_lesson(lesson)
+    assert await store.list_lessons(user, "advertiser", status="approved") == []
+    await store.save_lesson({**lesson, "status": "approved"})
+    assert [x["id"] for x in await store.list_lessons(user, "advertiser", status="approved")] == [lesson["id"]]
+    assert await store.list_lessons(user, "influencer") == [] and (await store.get_lesson(lesson["id"]))["status"] == "approved"

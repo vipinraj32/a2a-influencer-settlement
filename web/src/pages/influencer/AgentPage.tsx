@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
+import { AgentLessons, AgentPerformance } from "../../components/AgentPerformance";
 import { AgentPolicyBuilder } from "../../components/AgentPolicyBuilder";
 import { AgentSettingsForm } from "../../components/AgentSettingsForm";
 import { EvidenceTable } from "../../components/Evidence";
@@ -49,6 +50,8 @@ export function AgentPage() {
         <EvidenceTable items={evidence} />
       </Card>
       <h2>Agent profile</h2>
+      <AgentPerformance />
+      <AgentLessons />
       <AgentPolicyBuilder />
     </div>
   );

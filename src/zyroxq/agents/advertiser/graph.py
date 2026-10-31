@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send, interrupt
 
 from ...agent_policy import screen_creator
+from ...feedback import lessons_for
 from ...models import Deal, DealState, DealTerms, NegotiationReply, Offer, new_id
 from ...services.deals import DealService
 from ..influencer.server import NEGOTIATE_SKILL
@@ -72,7 +73,8 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
         return [Send("negotiate", {"campaign_id": state["campaign_id"], "influencer_id": i}) for i in state["shortlist"]]
 
     async def negotiate(inp: NegotiateInput) -> AdvertiserState:
-        """Bounded: at most `spec.max_rounds` offers; failure (decline, no movement, escalation) is a valid outcome."""
+        """Bounded: at most `spec.max_rounds` offers; failure (decline, no movement, escalation) is a valid outcome.
+        Every message is persisted and streamed the moment its agent produces it (see DealService.negotiation_event)."""
         spec = (await deals.campaign(inp["campaign_id"])).spec
         reg = await ctx.registry.get(inp["influencer_id"])
         if reg is None:
@@ -86,44 +88,98 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
             await deals.end_negotiation(deal, DealState.REJECTED, "creator does not meet the advertiser's evidence requirements")
             return {"results": [{"deal_id": deal.id, "outcome": "screened_out"}]}
 
-        offer = opening_offer(spec, deal.id, policy)
-        actor = f"influencer-agent:{reg.profile.id}"
-        counters: list[Offer] = []
-        while True:
-            message = {"type": "offer", "advertiser": spec.advertiser, "requirements": spec.requirements_document(), "offer": offer.model_dump(mode="json")}
-            raw = await ctx.a2a.send(reg.agent_url, message, context_id=deal.id)
-            reply = NegotiationReply.model_validate(raw)
-            await deals.record_round(deal, offer, {"kind": reply.kind, "reason": reply.reason, "decided_by": raw.get("decided_by"),
-                                                   "counter": reply.offer.model_dump(mode="json") if reply.offer else None}, actor)  # fmt: skip
-            if reply.kind == "accept" and reply.terms is not None:
-                return {"results": [await _agree(deal.id, reply.terms, offer)]}
-            if reply.kind in ("clarify", "escalate"):
-                await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"creator's agent: {reply.reason}")
-                return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
-            if reply.kind == "reject" or reply.offer is None:
-                await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, f"creator declined: {reply.reason}")
-                return {"results": [{"deal_id": deal.id, "outcome": "rejected"}]}
-            move = await next_move(spec, reg.profile, offer, reply.offer, ctx.llm, policy, counters, ctx.clock.now())
-            counters.append(reply.offer)
-            if move.record is not None:
-                await deals.record_decision(move.record)
-            await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_move", action=move.action, reason=move.reason,
-                              decided_by=move.decided_by, policy_override=move.policy_override)  # fmt: skip
-            outcome = move.record.public_explanation if move.record else move.reason
-            if move.action == "escalate":
-                await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"advertiser review needed: {outcome}")
-                return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
-            if move.action == "walk_away" or move.offer is None:
-                await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, outcome)
-                return {"results": [{"deal_id": deal.id, "outcome": "walked_away"}]}
-            offer = move.offer
+        us = ("advertiser", f"advertiser-agent:{spec.owner_id}", f"{spec.advertiser} agent")
+        them = ("influencer", f"influencer-agent:{reg.profile.id}", f"{reg.profile.name}'s agent")
+        system = ("system", "zyroxq", "ZyroXQ")
+
+        async def emit(who: tuple[str, str, str], event_type: str, **kw: Any) -> dict[str, Any]:
+            return await deals.negotiation_event(deal, event_type, *who, **kw)
+
+        async def finish(event_type: str, outcome: str, content: str, **kw: Any) -> None:
+            await emit(system, event_type, content=content, outcome=outcome, **kw)
+            await emit(system, "negotiation_completed", outcome=outcome)
+
+        deals.negotiation_started(deal.id)
+        try:
+            lessons = await lessons_for(ctx.store, spec.owner_id, "advertiser", niche=spec.niche, compensation_model=spec.compensation_model)
+            if lessons:
+                await deals.audit(spec.id, deal.id, "advertiser-agent", "lessons_applied", lessons=[x["id"] for x in lessons])
+            await emit(system, "negotiation_started", content=f"{us[2]} opened talks with {them[2]}.", max_rounds=spec.max_rounds,
+                       compensation_model=spec.compensation_model)  # fmt: skip
+            offer = opening_offer(spec, deal.id, policy)
+            counters: list[Offer] = []
+            while True:
+                if deals.cancel_requested(deal.id):
+                    await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, "cancelled by the advertiser")
+                    await finish("negotiation_rejected", "cancelled", "Cancelled by the advertiser.")
+                    return {"results": [{"deal_id": deal.id, "outcome": "cancelled"}]}
+                sent = await emit(us, "message_completed", content=offer.note or "Offer.", offer=offer, message_id=new_id("MSG"))
+                await emit(us, "offer_created" if offer.round == 1 else "counter_offer_created", offer=offer, message_id=sent["message_id"])
+                await emit(them, "agent_thinking", round=offer.round)
+                message = {"type": "offer", "advertiser": spec.advertiser, "requirements": spec.requirements_document(), "offer": offer.model_dump(mode="json")}
+                raw = await ctx.a2a.send(reg.agent_url, message, context_id=deal.id)
+                reply = NegotiationReply.model_validate(raw)
+                await deals.record_round(deal, offer, {"kind": reply.kind, "reason": reply.reason, "decided_by": raw.get("decided_by"),
+                                                       "counter": reply.offer.model_dump(mode="json") if reply.offer else None}, them[1])  # fmt: skip
+                answered = await emit(them, "message_completed", content=reply.reason, round=offer.round, reply=reply.kind, message_id=new_id("MSG"),
+                                      offer=reply.offer if reply.kind in ("counter", "accept") else None)  # fmt: skip
+                if reply.kind == "accept" and reply.terms is not None:
+                    result = await _agree(deal.id, reply.terms, offer)
+                    t = reply.terms
+                    agreed = {"fixed_fee": t.fixed_fee, "cpm": t.cpm, "cap": t.cap, "publish_by": t.publish_by, "deliverable": t.deliverable}
+                    await finish("negotiation_agreed", "agreed", f"Agreed in round {offer.round}.", terms_hash=t.terms_hash(), terms=agreed)
+                    return {"results": [result]}
+                if reply.kind in ("clarify", "escalate"):
+                    await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"creator's agent: {reply.reason}")
+                    await finish("negotiation_rejected", "escalated", f"Paused for a human decision: {reply.reason}")
+                    return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
+                if reply.kind == "reject" or reply.offer is None:
+                    await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, f"creator declined: {reply.reason}")
+                    timeout = offer.round >= spec.max_rounds
+                    await finish("negotiation_timeout" if timeout else "negotiation_rejected", "timeout" if timeout else "rejected",
+                                 f"{them[2]} declined: {reply.reason}")  # fmt: skip
+                    return {"results": [{"deal_id": deal.id, "outcome": "rejected"}]}
+                await emit(them, "counter_offer_created", offer=reply.offer, message_id=answered["message_id"])
+                await emit(us, "agent_thinking", round=offer.round + 1)
+                move = await next_move(spec, reg.profile, offer, reply.offer, ctx.llm, policy, counters, ctx.clock.now(),
+                                       lessons=[x["guidance"] for x in lessons])  # fmt: skip
+                counters.append(reply.offer)
+                if move.record is not None:
+                    await deals.record_decision(move.record)
+                await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_move", action=move.action, reason=move.reason,
+                                  decided_by=move.decided_by, policy_override=move.policy_override)  # fmt: skip
+                outcome = move.record.public_explanation if move.record else move.reason
+                if move.action == "escalate":
+                    await deals.end_negotiation(await deals.get(deal.id), DealState.ESCALATED, f"advertiser review needed: {outcome}")
+                    await finish("negotiation_rejected", "escalated", "Paused: the advertiser needs to review this one.")
+                    return {"results": [{"deal_id": deal.id, "outcome": "escalated"}]}
+                if move.action == "walk_away" or move.offer is None:
+                    await deals.end_negotiation(await deals.get(deal.id), DealState.REJECTED, outcome)
+                    await emit(us, "message_completed", content=outcome or "Declined.", round=offer.round + 1, reply="reject", message_id=new_id("MSG"))
+                    timeout = offer.round >= spec.max_rounds
+                    await finish("negotiation_timeout" if timeout else "negotiation_rejected", "timeout" if timeout else "rejected",
+                                 "No agreement within the round limit." if timeout else f"{us[2]} walked away.")  # fmt: skip
+                    return {"results": [{"deal_id": deal.id, "outcome": "walked_away"}]}
+                offer = move.offer
+        except Exception as e:  # an unreachable or failing agent ends this negotiation only, with a visible error
+            log.exception("negotiation %s failed", deal.id)
+            current = await deals.get(deal.id)
+            if current.state == DealState.NEGOTIATING:
+                await deals.end_negotiation(current, DealState.REJECTED, f"negotiation failed: {type(e).__name__}")
+            await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_error", error=f"{type(e).__name__}: {e}")
+            await finish("negotiation_error", "error", "The negotiation stopped because an agent could not respond. Nothing was agreed or paid.",
+                         error=type(e).__name__)  # fmt: skip
+            return {"results": [{"deal_id": deal.id, "outcome": "error"}]}
+        finally:
+            deals.negotiation_stopped(deal.id)
 
     async def _agree(deal_id: str, terms: DealTerms, offer: Offer) -> dict[str, Any]:
         deal = await deals.get(deal_id)
         deal.terms = terms
         deal.agreed_at = ctx.clock.now()
         deal.negotiation_outcome = f"agreed in round {offer.round} of {offer.max_rounds}"
-        await deals.save(deal, DealState.AGREED)
+        deal = await deals.save(deal, DealState.AGREED)
+        await deals.record_performance(deal)
         await deals.audit(deal.campaign_id, deal.id, "advertiser-agent", "terms_agreed", fixed=terms.fixed_fee, cpm=terms.cpm,
                           cap=terms.cap, terms_hash=terms.terms_hash(), signature=terms.influencer_signature[:18] + "…")  # fmt: skip
         return {"deal_id": deal.id, "outcome": "agreed", "offer": offer.model_dump(mode="json")}

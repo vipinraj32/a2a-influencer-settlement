@@ -21,6 +21,8 @@ Python 3.13 project managed with uv; package in `src/zyroxq/` (see README "Folde
 - Frontend: `web/` (React + TypeScript + Vite). `npm run build` writes to `src/zyroxq/api/static` (gitignored); `npm run dev` on :5173 proxies the API on :8000. Live updates come from `/api/stream` (SSE, filtered per user).
 - Escrow rules exist twice (`contracts/CampaignEscrow.sol` and `chain/escrow.py` SimulatedEscrow) — change both together; `attestation_digest` must match the contract.
 - Funding: a deal is FUNDED only via `DealService._settle` → `chain/settlement.py` evidence (receipt Transfer payer → escrow, exact cap) → `escrow.mark_funded(deal, tx)`. Webhooks and lookups are claims. Ambiguous outcomes go to PAYMENT_UNKNOWN and are reconciled, never re-signed. State changes must follow `models.DEAL_TRANSITIONS`. Budget caps are reserved atomically (`store.reserve_budget`).
+- Live negotiation: `negotiate` in `agents/advertiser/graph.py` emits each message through `DealService.negotiation_event` (persisted to `negotiation_messages` with a per-deal `event_id`, then published). `/api/negotiations/{id}/stream` is read-only SSE that replays after `Last-Event-ID`; it never starts a negotiation. Transcript events carry only public notes and offers.
+- Human feedback (`feedback.py`): each party rates its own agent; a lesson is drafted as `pending` and reaches the agent only after its owner approves it, and only as LLM prompt guidance. Lessons never touch `agent_policy/` or `check_offer`, so hard limits cannot move.
 - Recompile the contract with `uv run python scripts/compile_contracts.py` (writes `contracts/build/CampaignEscrow.json`).
 
 ## Stack

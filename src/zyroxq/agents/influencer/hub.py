@@ -51,7 +51,7 @@ class InfluencerHub:
             self._apps.pop(influencer_id, None)
             return None
         policy = me.policy.model_dump(mode="json") if me.policy else None
-        fingerprint = json.dumps([me.profile.model_dump(mode="json"), me.persona, policy], sort_keys=True)
+        fingerprint = json.dumps([me.profile.model_dump(mode="json"), me.persona, policy, me.lessons], sort_keys=True)
         cached = self._apps.get(influencer_id)
         if cached is None or cached[0] != fingerprint:
             app, executor = build_influencer_app(me, self.agent_url(influencer_id), self.clock, self.llm, self.inbox(influencer_id),

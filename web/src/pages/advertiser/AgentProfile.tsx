@@ -1,3 +1,4 @@
+import { AgentLessons, AgentPerformance } from "../../components/AgentPerformance";
 import { AgentPolicyBuilder } from "../../components/AgentPolicyBuilder";
 import { Card } from "../../components/ui";
 
@@ -13,6 +14,8 @@ export function AgentProfile() {
           <li>The AI may suggest a move. Code checks it against these rules, and you still sign every payment in your own wallet.</li>
         </ul>
       </Card>
+      <AgentPerformance />
+      <AgentLessons />
       <AgentPolicyBuilder />
     </div>
   );

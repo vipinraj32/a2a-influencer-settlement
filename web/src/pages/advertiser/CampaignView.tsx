@@ -3,7 +3,8 @@ import { Link, useParams } from "react-router";
 import { api } from "../../api";
 import { ComplianceCard, ReviewForm } from "../../components/Compliance";
 import { needsReview } from "../../components/ContentChecks";
-import { A2AChat, ActivityChart, DevClock } from "../../components/CampaignPanels";
+import { ActivityChart, DevClock } from "../../components/CampaignPanels";
+import { LiveNegotiation } from "../../components/LiveNegotiation";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
@@ -467,7 +468,16 @@ export function CampaignView() {
           <div className="side-body">
             {tab === "chat" ? (
               deal ? (
-                <A2AChat deal={deal} creator={name(deal)} avatar={avatars.get(deal.influencer_id)} />
+                <LiveNegotiation
+                  key={deal.id}
+                  deal={deal}
+                  viewer="advertiser"
+                  creator={name(deal)}
+                  avatar={avatars.get(deal.influencer_id)}
+                  brand={c.spec.advertiser}
+                  limits={{ budget: c.spec.budget, max_fixed: c.spec.max_fixed, max_cpm: c.spec.max_cpm, cap: c.spec.cap_per_creator }}
+                  deliverable={c.spec.deliverable}
+                />
               ) : (
                 <Empty>{working ? "Waiting for the first creator agent to answer…" : "No conversations for this campaign."}</Empty>
               )

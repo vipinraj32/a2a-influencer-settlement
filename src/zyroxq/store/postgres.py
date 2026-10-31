@@ -79,6 +79,57 @@ CREATE TABLE IF NOT EXISTS negotiation_decisions (
     data        JSONB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS decisions_deal_idx ON negotiation_decisions (deal_id, at);
+CREATE TABLE IF NOT EXISTS negotiation_messages (
+    deal_id     TEXT NOT NULL,
+    event_id    INTEGER NOT NULL,
+    campaign_id TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    agent_role  TEXT NOT NULL,
+    message_id  TEXT,
+    at          TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (deal_id, event_id)
+);
+CREATE TABLE IF NOT EXISTS negotiation_rounds (
+    deal_id     TEXT NOT NULL,
+    round       INTEGER NOT NULL,
+    campaign_id TEXT NOT NULL,
+    at          TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (deal_id, round)
+);
+CREATE TABLE IF NOT EXISTS negotiation_feedback (
+    id          TEXT PRIMARY KEY,
+    deal_id     TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    party       TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL,
+    UNIQUE (deal_id, party)
+);
+CREATE INDEX IF NOT EXISTS feedback_user_idx ON negotiation_feedback (user_id, created_at);
+CREATE TABLE IF NOT EXISTS agent_performance (
+    deal_id       TEXT PRIMARY KEY,
+    campaign_id   TEXT NOT NULL,
+    advertiser_id TEXT NOT NULL,
+    influencer_id TEXT NOT NULL,
+    outcome       TEXT NOT NULL,
+    ended_at      TIMESTAMPTZ,
+    data          JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS performance_advertiser_idx ON agent_performance (advertiser_id);
+CREATE INDEX IF NOT EXISTS performance_influencer_idx ON agent_performance (influencer_id);
+CREATE TABLE IF NOT EXISTS agent_improvement_examples (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    feedback_id TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    data        JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS lessons_owner_idx ON agent_improvement_examples (owner_id, role, status);
 """
 
 
@@ -257,4 +308,98 @@ class PostgresStore:
             params.append(party)
         async with self.pool.connection() as conn:
             rows = await (await conn.execute(sql + " ORDER BY at, id", params)).fetchall()
+        return [r[0] for r in rows]
+
+    async def add_negotiation_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        deal_id = event["negotiation_id"]
+        async with self.pool.connection() as conn, conn.transaction():
+            # One writer per deal at a time, so event ids are gap-free and ordered
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"negotiation:{deal_id}",))
+            row = await (await conn.execute("SELECT COALESCE(MAX(event_id), 0) FROM negotiation_messages WHERE deal_id = %s", (deal_id,))).fetchone()
+            assert row is not None
+            saved = {**event, "event_id": row[0] + 1}
+            await conn.execute(
+                "INSERT INTO negotiation_messages (deal_id, event_id, campaign_id, event_type, agent_role, message_id, at, data) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (deal_id, saved["event_id"], saved["campaign_id"], saved["event_type"], saved["agent_role"], saved.get("message_id"),
+                 saved["timestamp"], Jsonb(saved)),
+            )  # fmt: skip
+        return saved
+
+    async def list_negotiation_events(self, deal_id: str, after: int = 0) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT data FROM negotiation_messages WHERE deal_id = %s AND event_id > %s ORDER BY event_id", (deal_id, after)
+            )).fetchall()  # fmt: skip
+        return [r[0] for r in rows]
+
+    async def add_negotiation_round(self, row: dict[str, Any]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO negotiation_rounds (deal_id, round, campaign_id, at, data) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (deal_id, round) DO UPDATE SET data = EXCLUDED.data",
+                (row["deal_id"], row["round"], row["campaign_id"], row["at"], Jsonb(row)),
+            )
+
+    async def list_negotiation_rounds(self, deal_id: str) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute("SELECT data FROM negotiation_rounds WHERE deal_id = %s ORDER BY round", (deal_id,))).fetchall()
+        return [r[0] for r in rows]
+
+    async def save_feedback(self, record: dict[str, Any]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO negotiation_feedback (id, deal_id, campaign_id, party, user_id, created_at, data) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (deal_id, party) DO UPDATE SET id = EXCLUDED.id, user_id = EXCLUDED.user_id, "
+                "created_at = EXCLUDED.created_at, data = EXCLUDED.data",
+                (record["id"], record["deal_id"], record["campaign_id"], record["party"], record["user_id"], record["created_at"], Jsonb(record)),
+            )
+
+    async def list_feedback(self, *, deal_id: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
+        sql, params = "SELECT data FROM negotiation_feedback WHERE TRUE", []
+        if deal_id is not None:
+            sql += " AND deal_id = %s"
+            params.append(deal_id)
+        if user_id is not None:
+            sql += " AND user_id = %s"
+            params.append(user_id)
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(sql + " ORDER BY created_at", params)).fetchall()
+        return [r[0] for r in rows]
+
+    async def save_performance(self, row: dict[str, Any]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO agent_performance (deal_id, campaign_id, advertiser_id, influencer_id, outcome, ended_at, data) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (deal_id) DO UPDATE SET outcome = EXCLUDED.outcome, "
+                "ended_at = EXCLUDED.ended_at, data = EXCLUDED.data",
+                (row["deal_id"], row["campaign_id"], row["advertiser_id"], row["influencer_id"], row["outcome"], row["ended_at"], Jsonb(row)),
+            )
+
+    async def list_performance(self, user_id: str, role: str) -> list[dict[str, Any]]:
+        column = "advertiser_id" if role == "advertiser" else "influencer_id"
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(f"SELECT data FROM agent_performance WHERE {column} = %s ORDER BY ended_at", (user_id,))).fetchall()
+        return [r[0] for r in rows]
+
+    async def save_lesson(self, lesson: dict[str, Any]) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO agent_improvement_examples (id, owner_id, role, status, feedback_id, created_at, data) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, data = EXCLUDED.data",
+                (lesson["id"], lesson["owner_id"], lesson["role"], lesson["status"], lesson["feedback_id"], lesson["created_at"], Jsonb(lesson)),
+            )
+
+    async def get_lesson(self, lesson_id: str) -> dict[str, Any] | None:
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT data FROM agent_improvement_examples WHERE id = %s", (lesson_id,))).fetchone()
+        return row[0] if row else None
+
+    async def list_lessons(self, owner_id: str, role: str, status: str | None = None) -> list[dict[str, Any]]:
+        sql, params = "SELECT data FROM agent_improvement_examples WHERE owner_id = %s AND role = %s", [owner_id, role]
+        if status is not None:
+            sql += " AND status = %s"
+            params.append(status)
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(sql + " ORDER BY created_at DESC", params)).fetchall()
         return [r[0] for r in rows]

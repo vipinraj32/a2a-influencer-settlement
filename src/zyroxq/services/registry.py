@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from ..agent_policy.models import InfluencerPolicy
 from ..agents.influencer.identity import InfluencerIdentity
 from ..auth.crypto import decrypt_agent_key
+from ..feedback import lessons_for
 from ..models import InfluencerProfile, User
 from ..policy import delegation_valid
 from ..store import Store
@@ -53,7 +54,8 @@ class InfluencerRegistry:
         doc = await self.store.get_version(POLICY_KIND, user.id)
         policy = InfluencerPolicy.model_validate(doc) if doc and doc.get("role") == "influencer" else None
         persona = policy.persona if policy else user.persona
-        return InfluencerIdentity(profile, decrypt_agent_key(self.secret, user.agent_key_encrypted), persona, policy)
+        lessons = tuple(x["guidance"] for x in await lessons_for(self.store, user.id, "influencer", niche=profile.niche))
+        return InfluencerIdentity(profile, decrypt_agent_key(self.secret, user.agent_key_encrypted), persona, policy, lessons)
 
 
 def public_profile(profile: InfluencerProfile) -> InfluencerProfile:

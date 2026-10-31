@@ -17,6 +17,7 @@ from ..agent_policy import AdvertiserPolicy, DecisionRecord, calculate
 from ..chain.escrow import EscrowError
 from ..chain.settlement import FundingEvidence, SettlementMismatch, SettlementPending
 from ..compliance import proof_checks as disclosure_checks
+from ..feedback import performance_row
 from ..hsp.cart import build_cart_contents, cart_method, cart_total
 from ..hsp.webhook import verify_webhook_signature
 from ..models import (
@@ -54,7 +55,7 @@ AUTH_EXPIRED = "authorization expired or expires too soon to submit"
 POLICY_KIND = "agent_policy"
 # Audit kinds only the advertiser sees: they name the advertiser's limits or internal reasoning
 ADVERTISER_PRIVATE_EVENTS = {"negotiation_move", "negotiation_decision", "policy_gate", "approval_decision", "campaign_full",
-                             "discovered", "agent_unreachable", "authorization_redrafted"}  # fmt: skip
+                             "discovered", "agent_unreachable", "authorization_redrafted", "lessons_applied"}  # fmt: skip
 
 
 class DealError(Exception):
@@ -68,6 +69,8 @@ class DealService:
         self._owners: dict[str, str] = {}  # campaign → advertiser user, for live-event routing
         self._deal_influencers: dict[str, str] = {}
         self._deal_locks: dict[str, asyncio.Lock] = {}
+        self._negotiating: set[str] = set()  # deals whose negotiation loop is running in this process
+        self._cancel: set[str] = set()
 
     # ---- helpers -----------------------------------------------------------
 
@@ -181,7 +184,63 @@ class DealService:
 
     async def end_negotiation(self, deal: Deal, state: DealState, outcome: str) -> Deal:
         deal.negotiation_outcome = outcome
-        return await self.save(deal, state)
+        deal = await self.save(deal, state)
+        await self.record_performance(deal)
+        return deal
+
+    async def record_performance(self, deal: Deal) -> None:
+        if (row := performance_row(deal, (await self.campaign(deal.campaign_id)).spec)) is not None:
+            await self.ctx.store.save_performance(row)
+
+    # ---- live negotiation transcript ------------------------------------------
+
+    async def negotiation_event(self, deal: Deal, event_type: str, agent_role: str, agent_id: str, agent_name: str, /, *,
+                                content: str = "", offer: Offer | None = None, round: int | None = None,
+                                message_id: str | None = None, **extra: Any) -> dict[str, Any]:  # fmt: skip
+        """Persists one transcript event, then pushes it to the browsers that may see the deal. Only what the two
+        agents exchanged goes in here (public notes and offers): never private limits or decision rationale."""
+        event = {
+            "negotiation_id": deal.id,
+            "campaign_id": deal.campaign_id,
+            "event_type": event_type,
+            "agent_role": agent_role,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "message_id": message_id,
+            "round": round if round is not None else (offer.round if offer else None),
+            "timestamp": self.ctx.clock.now().isoformat(),
+            "content": content,
+            "offer": {k: str(getattr(offer, k)) for k in ("fixed_fee", "cpm", "cap")} | {"round": offer.round} if offer else None,
+            **json.loads(json.dumps(extra, default=str)),
+        }
+        saved = await self.ctx.store.add_negotiation_event(event)
+        await self._publish({"type": "negotiation", "campaign_id": deal.campaign_id, "deal_id": deal.id, "event": saved}, deal.campaign_id, deal.id)
+        return saved
+
+    def negotiation_started(self, deal_id: str) -> None:
+        self._negotiating.add(deal_id)
+
+    def negotiation_stopped(self, deal_id: str) -> None:
+        self._negotiating.discard(deal_id)
+        self._cancel.discard(deal_id)
+
+    def cancel_requested(self, deal_id: str) -> bool:
+        return deal_id in self._cancel
+
+    async def cancel_negotiation(self, deal: Deal, by: str) -> bool:
+        """Asks the running loop to stop before its next message. A negotiation with no live loop (the server
+        restarted mid-way) is closed here directly. False when the negotiation already ended."""
+        if deal.state != DealState.NEGOTIATING:
+            return False
+        await self.audit(deal.campaign_id, deal.id, "human", "negotiation_cancel_requested", by=by)
+        if deal.id in self._negotiating:
+            self._cancel.add(deal.id)
+            return True
+        await self.end_negotiation(deal, DealState.REJECTED, "cancelled by the advertiser")
+        system = ("system", "zyroxq", "ZyroXQ")
+        await self.negotiation_event(deal, "negotiation_rejected", *system, content="Cancelled by the advertiser.", outcome="cancelled")
+        await self.negotiation_event(deal, "negotiation_completed", *system, outcome="cancelled")
+        return True
 
     async def record_approval(self, deal_id: str, kind: str, by: str, approved: bool, note: str = "") -> Deal:
         deal = await self.get(deal_id)
@@ -296,6 +355,8 @@ class DealService:
     async def record_round(self, deal: Deal, offer: Offer, reply: dict[str, Any], actor: str) -> None:
         deal.rounds.append({"offer": offer.model_dump(mode="json"), "reply": reply})
         await self.save(deal)
+        await self.ctx.store.add_negotiation_round({"deal_id": deal.id, "campaign_id": deal.campaign_id, "round": offer.round,
+                                                    "at": self.ctx.clock.now().isoformat(), "offer": deal.rounds[-1]["offer"], "reply": reply})  # fmt: skip
         await self.audit(deal.campaign_id, deal.id, actor, "negotiation_round", round=offer.round,
                          fixed=offer.fixed_fee, cpm=offer.cpm, reply=reply.get("kind"), reason=reply.get("reason", ""))  # fmt: skip
 

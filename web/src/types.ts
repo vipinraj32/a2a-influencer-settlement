@@ -419,7 +419,7 @@ export interface AuditEvent {
 }
 
 export interface LiveEvent {
-  type: "audit" | "deal" | "campaign";
+  type: "audit" | "deal" | "campaign" | "negotiation";
   campaign_id: string;
   deal_id?: string | null;
   kind?: string;
@@ -725,4 +725,111 @@ export interface CreatorProfileView {
     paid: string;
     updated_at: string | null;
   }[];
+}
+
+export type NegotiationEventType =
+  | "negotiation_started"
+  | "agent_thinking"
+  | "message_completed"
+  | "offer_created"
+  | "counter_offer_created"
+  | "negotiation_agreed"
+  | "negotiation_rejected"
+  | "negotiation_timeout"
+  | "negotiation_error"
+  | "negotiation_completed"
+  | "negotiation_legacy";
+
+/** One persisted transcript event from /api/negotiations/{id}/stream; event_id orders and de-duplicates them. */
+export interface NegotiationEvent {
+  event_id: number;
+  negotiation_id: string;
+  campaign_id: string;
+  event_type: NegotiationEventType;
+  agent_role: "advertiser" | "influencer" | "system";
+  agent_id: string;
+  agent_name: string;
+  message_id: string | null;
+  round: number | null;
+  timestamp: string;
+  content: string;
+  offer: { fixed_fee: string; cpm: string; cap: string; round: number } | null;
+  reply?: ReplyKind;
+  outcome?: "agreed" | "rejected" | "timeout" | "escalated" | "cancelled" | "error";
+  max_rounds?: number;
+  compensation_model?: CompensationModel;
+  terms?: { fixed_fee: string; cpm: string; cap: string; publish_by: string; deliverable: string };
+  terms_hash?: string;
+  error?: string;
+}
+
+export type FeedbackCategory =
+  | "accepted_too_quickly"
+  | "rejected_reasonable_offer"
+  | "poor_negotiation"
+  | "ignored_requirements"
+  | "exceeded_budget"
+  | "unrealistic_counteroffer"
+  | "misunderstood_other_party"
+  | "good_agreement"
+  | "other";
+
+export interface FeedbackRatings {
+  effectiveness: number | null;
+  offer_quality: number | null;
+  communication: number | null;
+  respected_requirements: number | null;
+  outcome: number | null;
+}
+
+export interface FeedbackInput {
+  rating: number;
+  category: FeedbackCategory;
+  ratings: FeedbackRatings;
+  what_went_wrong: string;
+  do_differently: string;
+  suggested_response: string;
+  suggested_offer: { fixed_fee: string; cpm: string } | null;
+  comments: string;
+  message_id: string | null;
+}
+
+export interface NegotiationFeedback extends FeedbackInput {
+  id: string;
+  deal_id: string;
+  party: "advertiser" | "influencer";
+  category_label: string;
+  target: { message_id: string; round: number | null; content: string } | null;
+  signal: { outcome: string; suggested_offer_within_limits: boolean };
+  created_at: string;
+  lesson_id: string | null;
+}
+
+export interface AgentLesson {
+  id: string;
+  role: "advertiser" | "influencer";
+  status: "pending" | "approved" | "dismissed";
+  category: FeedbackCategory;
+  negative: boolean;
+  guidance: string;
+  deal_id: string;
+  context: { niche: string; compensation_model: string };
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export interface AgentPerformance {
+  role: "advertiser" | "influencer";
+  total: number;
+  outcomes: Record<string, number>;
+  agreement_rate: number | null;
+  rejection_rate: number | null;
+  avg_rounds: number | null;
+  avg_price_move: number | null;
+  price_move_basis: string;
+  price_move_samples: number;
+  satisfaction: number | null;
+  feedback_count: number;
+  trend: { week: string; negotiations: number; agreement_rate: number | null; avg_rating: number | null; feedback: number }[];
+  common_mistakes: { category: FeedbackCategory; label: string; count: number }[];
 }

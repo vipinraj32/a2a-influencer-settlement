@@ -16,3 +16,4 @@ class InfluencerIdentity:
     private_key: str
     persona: str
     policy: InfluencerPolicy | None = None
+    lessons: tuple[str, ...] = ()  # owner-approved feedback lessons: prompt guidance only, never limits
