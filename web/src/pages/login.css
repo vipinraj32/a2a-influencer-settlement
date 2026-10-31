@@ -4,75 +4,40 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
   min-height: 100vh;
-  font-family: Figtree, Inter, system-ui, sans-serif;
+  font-family: var(--font);
 }
 
 .auth-side {
   position: relative;
-  isolation: isolate;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 48px;
-  padding: 48px clamp(24px, 5vw, 72px);
-  background: var(--ink);
-  color: color-mix(in srgb, var(--paper) 82%, var(--ink));
+  background: color-mix(in srgb, var(--blue) 14%, var(--paper));
 }
-.auth-side::before {
-  content: "";
+.auth-side img {
   position: absolute;
-  z-index: -1;
   inset: 0;
-  background:
-    radial-gradient(520px 380px at 100% 0%, color-mix(in srgb, var(--blue) 34%, transparent), transparent 70%),
-    radial-gradient(420px 340px at 0% 100%, color-mix(in srgb, var(--orange) 22%, transparent), transparent 70%);
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
 }
-.auth-logo {
-  align-self: flex-start;
-  transition: transform 0.2s;
-}
-.auth-logo:hover {
-  transform: scale(1.03);
-}
-.auth-side h1 {
-  max-width: 11ch;
-  color: var(--paper);
-  font-size: clamp(36px, 4vw, 58px);
-  font-weight: 800;
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-}
-.auth-side h1 span {
-  color: var(--blue);
-}
-.auth-side ul {
-  display: grid;
-  gap: 14px;
-  margin: 36px 0 0;
-  padding: 0;
-  list-style: none;
-  font-size: 17px;
-}
-.auth-side li {
-  position: relative;
-  padding-left: 30px;
-}
-.auth-side li::before {
-  content: "";
+/* the logo is part of the picture, so its area links home */
+.auth-logo-link {
   position: absolute;
-  left: 2px;
-  top: 7px;
-  width: 14px;
-  height: 8px;
-  border-left: 3px solid var(--blue);
-  border-bottom: 3px solid var(--blue);
-  transform: rotate(-45deg);
+  left: 30%;
+  right: 30%;
+  top: 10%;
+  height: 10%;
 }
-.auth-foot {
+.auth-tag {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
   margin: 0;
-  font-size: 14px;
-  color: color-mix(in srgb, var(--paper) 60%, var(--ink));
+  padding: 4px 12px;
+  border-radius: 99px;
+  background: rgb(5 23 48 / 70%);
+  color: var(--paper);
+  font-size: 12px;
 }
 
 .auth-main {
@@ -127,47 +92,6 @@
   margin: -6px 0 6px;
   color: var(--muted);
 }
-.auth-roles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.auth-roles button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 16px;
-  border: 2px solid var(--border);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 0.2s,
-    background 0.2s,
-    transform 0.2s;
-}
-.auth-roles button:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-}
-.auth-roles button.on {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.auth-roles strong {
-  font-size: 17px;
-}
-.auth-roles button.on strong {
-  color: var(--accent);
-}
-.auth-roles span {
-  color: var(--muted);
-  font-size: 14px;
-}
 .auth-google {
   display: flex;
   align-items: center;
@@ -200,6 +124,15 @@
   border-radius: 6px;
   background: var(--paper);
 }
+.auth-switch {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
 .auth-note {
   margin: 0;
   color: var(--muted);
@@ -212,14 +145,7 @@
     grid-template-columns: 1fr;
   }
   .auth-side {
-    gap: 28px;
-    padding: 28px 20px 36px;
-  }
-  .auth-side ul {
-    margin-top: 22px;
-  }
-  .auth-foot {
-    display: none;
+    height: 420px;
   }
   .auth-main {
     padding: 64px 16px 40px;

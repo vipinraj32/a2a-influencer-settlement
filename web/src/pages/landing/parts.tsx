@@ -89,6 +89,40 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M12 10v5M12 18h.01" />
     </>
   ),
+  home: (
+    <>
+      <rect x="3" y="3" width="7" height="9" rx="1.5" />
+      <rect x="14" y="3" width="7" height="5" rx="1.5" />
+      <rect x="14" y="12" width="7" height="9" rx="1.5" />
+      <rect x="3" y="16" width="7" height="5" rx="1.5" />
+    </>
+  ),
+  plus: <path d="M12 5v14M5 12h14" />,
+  users: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.9.6 3.1 2.3 3.5 5.2" />
+    </>
+  ),
+  bot: (
+    <>
+      <rect x="4" y="8" width="16" height="12" rx="3" />
+      <path d="M12 4v4M9 13h.01M15 13h.01M9.5 17h5" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c1-4 4-6 8-6s7 2 8 6" />
+    </>
+  ),
+  logout: <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4" />,
+  wallet: (
+    <>
+      <rect x="3" y="6" width="18" height="14" rx="2.5" />
+      <path d="M3 10h18M16 15h2M6 6l9-3 1 3" />
+    </>
+  ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   close: <path d="M6 6l12 12M18 6L6 18" />,
   github: (

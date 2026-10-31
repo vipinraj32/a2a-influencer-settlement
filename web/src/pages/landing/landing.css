@@ -27,9 +27,11 @@
   --lp-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --lp-max: 1200px;
   --lp-gutter: 24px;
+  /* headline face: geometric bold (Gilroy-like); body stays on the app's Proxima Nova stack */
+  --lp-display: "Plus Jakarta Sans", Gilroy, var(--font);
   background: var(--lp-bg);
   color: var(--lp-text);
-  font: 17px/1.6 Figtree, Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 400 16px/20px var(--font);
   overflow-x: clip;
 }
 
@@ -60,13 +62,18 @@
 .lp :where(h1, h2, h3) {
   margin: 0;
   color: var(--lp-ink);
+  font-family: var(--lp-display);
   font-weight: 700;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
   line-height: 1.12;
   text-transform: none;
 }
 :where(.lp) :where(p, ul, ol, figure, blockquote, dl, dd) {
   margin: 0;
+}
+/* longer lines of copy get more leading than the 20px base */
+:where(.lp) :where(p, li) {
+  line-height: 1.5;
 }
 :where(.lp) :where(ul, ol) {
   padding: 0;
@@ -151,7 +158,7 @@
   justify-content: center;
   gap: 8px;
   border-radius: 6px;
-  font-weight: 700;
+  font-weight: 600;
   white-space: nowrap;
   border: 2px solid transparent;
   cursor: pointer;
@@ -188,8 +195,8 @@
   font-size: 16px;
 }
 .lp-btn-lg {
-  min-height: 60px;
-  padding: 0 36px;
+  min-height: 64px;
+  padding: 0 40px;
   font-size: 18px;
 }
 .lp .lp-btn-primary {
@@ -324,8 +331,8 @@
   position: relative;
   padding: 6px 0;
   color: var(--lp-ink);
-  font-size: 16.5px;
-  font-weight: 500;
+  font-size: 18px;
+  font-weight: 400;
   transition: color 0.2s;
 }
 .lp-nav ul a::after {
@@ -377,7 +384,7 @@
     gap: 18px;
   }
   .lp-nav ul a {
-    font-size: 15.5px;
+    font-size: 16.5px;
   }
 }
 @media (max-width: 1060px) {
@@ -483,11 +490,11 @@
   animation: lp-pulse 2s infinite;
 }
 .lp-hero h1 {
-  font-size: clamp(44px, 5.6vw, 88px);
-  font-weight: 800;
-  line-height: 1.02;
-  letter-spacing: -0.03em;
-  max-width: 11ch;
+  font-size: clamp(44px, 4.2vw, 76px);
+  font-weight: 700;
+  line-height: 1.11;
+  letter-spacing: -0.025em;
+  max-width: 12ch;
 }
 .lp-hl {
   color: var(--blue);
@@ -507,9 +514,11 @@
 }
 .lp-hero-lead {
   margin: 32px 0 40px !important;
-  max-width: 26em;
-  font-size: 21px;
-  color: var(--lp-muted);
+  max-width: 24em;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--lp-ink);
 }
 
 /* carousel */
@@ -816,8 +825,10 @@
 .lp-rule blockquote em:last-child {
   color: var(--orange);
 }
-.lp-rule blockquote {
-  margin-bottom: 36px;
+.lp-rule-sub {
+  margin: 18px 0 32px !important;
+  color: var(--lp-muted);
+  font-size: 18px;
 }
 .lp-rule-art {
   position: relative;
@@ -1349,6 +1360,11 @@
   font-size: clamp(24px, 2.4vw, 34px);
   font-weight: 600;
   line-height: 1.22;
+}
+.lp-split-text {
+  margin-top: 16px !important;
+  color: var(--lp-muted);
+  font-size: 18px;
 }
 .lp-split-list {
   display: grid;

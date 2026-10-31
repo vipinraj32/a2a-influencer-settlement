@@ -1,6 +1,4 @@
-import { useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router";
-import { Logo } from "../components/Logo";
 import { api } from "../api";
 import { Notice } from "../components/ui";
 import { useSession } from "../session";
@@ -8,36 +6,43 @@ import "./login.css";
 
 type Role = "advertiser" | "influencer";
 
-const ROLES: { id: Role; title: string; text: string; note: string }[] = [
-  { id: "advertiser", title: "Advertiser", text: "Run campaigns", note: "You’ll connect a browser wallet (MetaMask) next." },
-  { id: "influencer", title: "Creator", text: "Get sponsored", note: "Google will also ask for read-only YouTube access to prove you own your channel." },
-];
+// The landing page picks the role: "Launch a Campaign" → ?as=advertiser, "Join as a Creator" → ?as=influencer.
+const ROLES: Record<Role, { title: string; sub: string; note: string; other: Role; otherLabel: string }> = {
+  advertiser: {
+    title: "Sign in as an advertiser",
+    sub: "Run campaigns and let your agent negotiate.",
+    note: "You’ll connect a browser wallet (MetaMask) next.",
+    other: "influencer",
+    otherLabel: "Are you a creator? Join as a creator",
+  },
+  influencer: {
+    title: "Join as a creator",
+    sub: "Get sponsored. Your agent negotiates for you.",
+    note: "Google will also ask for read-only YouTube access to prove you own your channel.",
+    other: "advertiser",
+    otherLabel: "Running a campaign? Sign in as an advertiser",
+  },
+};
 
 export function Login() {
   const { me, status } = useSession();
   const [params] = useSearchParams();
   const error = params.get("error");
-  const [role, setRole] = useState<Role>(params.get("as") === "influencer" ? "influencer" : "advertiser");
+  const role: Role = params.get("as") === "influencer" ? "influencer" : "advertiser";
   if (me) return <Navigate to="/app" replace />;
-  const current = ROLES.find((r) => r.id === role)!;
+  const current = ROLES[role];
 
   return (
     <div className="auth">
       <aside className="auth-side">
-        <Link to="/" className="auth-logo" aria-label="ZyroXQ home">
-          <Logo size={36} tone="dark" />
-        </Link>
-        <div>
-          <h1>
-            Your agents negotiate. <span>Your rules decide.</span>
-          </h1>
-          <ul>
-            <li>Agents agree terms within your limits</li>
-            <li>Your wallet signs — never the AI</li>
-            <li>Escrow pays only for verified content</li>
-          </ul>
-        </div>
-        <p className="auth-foot">HashKey A2A track · testnet</p>
+        <img
+          src="/landing/login-visual.webp"
+          alt="ZyroXQ with HashKey Chain: a campaign performance table and engagement chart, sample data"
+          width={1240}
+          height={1720}
+        />
+        <Link to="/" className="auth-logo-link" aria-label="ZyroXQ home" />
+        <p className="auth-tag">Illustrative mock-up · sample data</p>
       </aside>
 
       <main className="auth-main">
@@ -45,24 +50,18 @@ export function Login() {
           ← Back to home
         </Link>
         <div className="auth-card">
-          <h2>Sign in</h2>
-          <p className="auth-sub">Choose how you’ll use ZyroXQ.</p>
+          <h2>{current.title}</h2>
+          <p className="auth-sub">{current.sub}</p>
           {error && <Notice tone="bad">{error}</Notice>}
           {status && !status.login_configured && <Notice tone="warn">Google sign-in isn’t configured on the server yet.</Notice>}
-
-          <div className="auth-roles" role="radiogroup" aria-label="Account type">
-            {ROLES.map((r) => (
-              <button key={r.id} type="button" role="radio" aria-checked={role === r.id} className={role === r.id ? "on" : ""} onClick={() => setRole(r.id)}>
-                <strong>{r.title}</strong>
-                <span>{r.text}</span>
-              </button>
-            ))}
-          </div>
 
           <a className="auth-google" href={api.loginUrl(role)}>
             <GoogleMark /> Continue with Google
           </a>
           <p className="auth-note">{current.note}</p>
+          <Link className="auth-switch" to={`/login?as=${current.other}`} replace>
+            {current.otherLabel}
+          </Link>
         </div>
       </main>
     </div>

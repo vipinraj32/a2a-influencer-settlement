@@ -323,7 +323,7 @@ function PayoutCalculator() {
         <motion.div className="lp-payouts-head" {...reveal()}>
           <p className="lp-eyebrow">Payout math</p>
           <h2 id="payouts-title">See where the money goes</h2>
-          <p>Move the sliders. Same formula the escrow enforces.</p>
+          <p>Move the sliders to see how a deal pays out. The fixed fee is released on verified proof, the per-1K-view fee after the measuring window, and the rest comes back to you.</p>
         </motion.div>
         <div className="lp-calc">
           <motion.div className="lp-calc-inputs" {...reveal(0.05)}>
@@ -401,7 +401,7 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
     id: "negotiate",
     eyebrow: "Negotiate",
     title: "Agents agree on the deal, inside your rules",
-    text: "Offers and counters over A2A. A rules engine decides every reply.",
+    text: "Your agent sends offers to creator agents over A2A, in parallel. A deterministic rules engine decides every accept or counter — the AI only suggests and explains.",
     img: "feat-negotiate.webp",
     alt: "A2A negotiation thread next to your limits and the policy decision, sample data",
     status: "built",
@@ -410,7 +410,7 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
     id: "verify",
     eyebrow: "Verify",
     title: "Know why a video passed — or didn’t",
-    text: "YouTube checks, brand mentions and logo detection. Creators can fix and resubmit.",
+    text: "The verifier checks the channel, publish window and disclosure through the YouTube Data API, and the content agent looks for brand mentions and your logo. Creators see what to fix and can resubmit.",
     img: "feat-verify.webp",
     alt: "Rejected proof with the reasons and fixes shown to the creator, sample data",
     status: "beta",
@@ -420,7 +420,7 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
     id: "measure",
     eyebrow: "Measure",
     title: "See where every dollar went",
-    text: "Locked, paid and refunded — with views from the platform API.",
+    text: "Track what is locked in escrow, what was paid and what was refunded. Views come from the platform API, never from a creator’s own report.",
     img: "feat-measure.webp",
     alt: "Campaign results with escrow totals and a views-per-day chart, sample data",
     status: "beta",
@@ -429,7 +429,7 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
     id: "connect",
     eyebrow: "Connect",
     title: "Built for other agents too",
-    text: "A2A Agent Cards and MCP tools. Rate cards stay private.",
+    text: "Every creator agent publishes an A2A Agent Card, and channel data is available as MCP tools for your own agents. Creator rate cards stay private.",
     img: "feat-scale.webp",
     alt: "Creator Agent Card and the MCP tools list, sample data",
     status: "built",
@@ -502,6 +502,7 @@ function Faq() {
         <motion.div {...reveal()}>
           <p className="lp-eyebrow">FAQ</p>
           <h2 id="faq-title">Straight answers</h2>
+          <p>What ZyroXQ does today, and what is still testnet-only.</p>
           <a className="lp-more" href={DOCS} target="_blank" rel="noreferrer">
             Read the docs <Icon name="arrow" size={16} />
           </a>
@@ -553,6 +554,7 @@ function Resources() {
         <motion.div className="lp-res-head" {...reveal()}>
           <div>
             <h2 id="res-title">Under the hood</h2>
+            <p>Guides to the agents, the rules and the payment flow, straight from the project documentation.</p>
             <Cta to={DOCS} size="lg">
               Read the docs
             </Cta>
@@ -642,7 +644,9 @@ export function Landing() {
                 <h1 id="hero-title">
                   Your agents negotiate. <span className="lp-hl">Your rules decide.</span>
                 </h1>
-                <p className="lp-hero-lead">AI agents close creator deals. Escrow pays only for verified content.</p>
+                <p className="lp-hero-lead">
+                  AI agents find creators and negotiate sponsorships for you. The payment waits in escrow and is released only when the content is verified.
+                </p>
                 <div className="lp-cta-row">
                   <Cta to={advertiserStart} size="lg">
                     Launch a Campaign
@@ -667,6 +671,7 @@ export function Landing() {
                           The AI <em>proposes</em>. Rules <em>decide</em>. Your wallet <em>signs</em>.
                         </p>
                       </blockquote>
+                      <p className="lp-rule-sub">No payment ever depends on AI output alone. Signing is never an AI tool.</p>
                       <Cta to={DOCS} size="lg">
                         Read the design
                       </Cta>
@@ -685,6 +690,7 @@ export function Landing() {
                 <motion.div className="lp-narrow" {...reveal()}>
                   <p className="lp-eyebrow">How it works</p>
                   <h2 id="how-title">Your terms. Your limits. Your keys.</h2>
+                  <p>Agents do the back-and-forth, rules enforce your limits, and nothing moves without your signature. Pick a step to see what happens.</p>
                 </motion.div>
                 <Steps />
               </div>
@@ -703,6 +709,7 @@ export function Landing() {
                     <p className="lp-split-quote" id="creators-title">
                       Your agent negotiates above your private floor.
                     </p>
+                    <p className="lp-split-text">Set your rates once. Your agent handles the offers, and you see every term before anything is signed.</p>
                     <ul className="lp-split-list">
                       <li>Niches from your channel</li>
                       <li>Rate card stays private</li>
@@ -781,6 +788,7 @@ export function Landing() {
                 </nav>
                 <div className="lp-footer-cta">
                   <h2>Build campaigns on trust</h2>
+                  <p>Sign in with Google as an advertiser or a creator. Your agent is ready in minutes.</p>
                   <div className="lp-cta-row">
                     <Cta to={advertiserStart}>Get Started</Cta>
                     <Cta to={influencerStart} variant="outline">
