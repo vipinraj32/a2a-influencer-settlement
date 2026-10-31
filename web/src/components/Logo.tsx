@@ -1,29 +1,34 @@
-/** ZyroXQ brand mark: two agent nodes joined by a Z-shaped path (the negotiated agreement between them). */
+/** ZyroXQ brand assets, served from web/public. */
+export const LOGO = {
+  mark: "/ZyroXQ_Monogram_Blue.svg",
+  /** Blue monogram + ink wordmark, for light backgrounds. */
+  onLight: encodeURI("/ZyroXQ — Black logo.svg"),
+  /** Blue monogram + white wordmark, for dark backgrounds. */
+  onDark: encodeURI("/ZyroXQ — White logo.svg"),
+};
+
+// The wordmark files are 573×120 but the artwork ends at x≈392, so the frame crops the empty right side.
+const ART_W = 392;
+const FILE_W = 573;
+const FILE_H = 120;
+
 export function LogoMark({ size = 28, title }: { size?: number; title?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 40 40" role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}>
-      <defs>
-        <linearGradient id="zx-mark" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#4F46E5" />
-          <stop offset="1" stopColor="#0EA5A4" />
-        </linearGradient>
-      </defs>
-      <rect width="40" height="40" rx="11" fill="url(#zx-mark)" />
-      <path d="M12 12.5h13.5L14.5 27.5H28" fill="none" stroke="#fff" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="12.5" r="3" fill="#fff" />
-      <circle cx="28" cy="27.5" r="3" fill="#fff" />
-    </svg>
-  );
+  return <img className="zx-mark" src={LOGO.mark} width={size} height={size} alt={title ?? ""} aria-hidden={title ? undefined : true} />;
 }
 
-/** Mark + wordmark. "XQ" carries the accent so the name reads as Zyro·XQ. */
-export function Logo({ size = 28, className = "" }: { size?: number; className?: string }) {
+/**
+ * Full wordmark. `tone="auto"` follows the colour scheme (ink text on light, white text on dark);
+ * "light"/"dark" pin it for surfaces that never change.
+ */
+export function Logo({ size = 28, tone = "auto", className = "" }: { size?: number; tone?: "auto" | "light" | "dark"; className?: string }) {
+  const h = Math.round(size * 1.15);
+  const src = tone === "dark" ? LOGO.onDark : LOGO.onLight;
   return (
-    <span className={`zx-logo ${className}`}>
-      <LogoMark size={size} />
-      <span className="zx-word" style={{ fontSize: size * 0.72 }}>
-        Zyro<span className="zx-word-accent">XQ</span>
-      </span>
+    <span className={`zx-logo ${className}`} style={{ width: Math.round((h * ART_W) / FILE_H), height: h }}>
+      <picture>
+        {tone === "auto" && <source srcSet={LOGO.onDark} media="(prefers-color-scheme: dark)" />}
+        <img src={src} width={Math.round((h * FILE_W) / FILE_H)} height={h} alt="ZyroXQ" />
+      </picture>
     </span>
   );
 }

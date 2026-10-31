@@ -104,7 +104,7 @@ export function Layout() {
             className="btn btn-ghost btn-sm"
             onClick={async () => {
               await signOut();
-              navigate("/login");
+              navigate("/");
             }}
           >
             Sign out

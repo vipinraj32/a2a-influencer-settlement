@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link } from "react-router";
-import { api } from "../../api";
+import { LazyMotion, MotionConfig, domAnimation, m as motion, useMotionValueEvent, useReducedMotion, useScroll, useSpring } from "motion/react";
 import { Logo } from "../../components/Logo";
 import { useSession } from "../../session";
 import { Cta, Icon, Status, StatusTag } from "./parts";
@@ -9,24 +9,56 @@ import "./landing.css";
 const REPO = "https://github.com/vipinraj32/a2a-influencer-settlement";
 const DOCS = `${REPO}#readme`;
 const IMG = "/landing";
+const EASE = [0.2, 0.7, 0.2, 1] as const;
 
 const NAV = [
   { href: "#product", label: "Product" },
   { href: "#how", label: "How It Works" },
+  { href: "#payouts", label: "Payouts" },
   { href: "#creators", label: "For Creators" },
-  { href: "#technology", label: "Technology" },
-  { href: "#resources", label: "Resources" },
+  { href: "#faq", label: "FAQ" },
 ];
 
-function Header({ signedIn, advertiserStart, influencerStart }: { signedIn: boolean; advertiserStart: string; influencerStart: string }) {
+type Direction = "down" | "up";
+
+/** Which way the page is scrolling; sections enter from that side. */
+const ScrollDirection = createContext<Direction>("down");
+
+/** Props for an element that slides in from the scroll direction each time it enters the viewport. */
+function revealProps(dir: Direction, delay = 0) {
+  return {
+    initial: "hidden",
+    whileInView: "show",
+    viewport: { once: false, amount: 0.2 },
+    variants: {
+      hidden: { opacity: 0, y: dir === "down" ? 48 : -48 },
+      show: { opacity: 1, y: 0, transition: { duration: 0.6, delay, ease: EASE } },
+    },
+  } as const;
+}
+
+function useReveal() {
+  const dir = useContext(ScrollDirection);
+  return (delay = 0) => revealProps(dir, delay);
+}
+
+function Header({ direction, signedIn, advertiserStart, influencerStart }: { direction: Direction; signedIn: boolean; advertiserStart: string; influencerStart: string }) {
   const [open, setOpen] = useState(false);
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 8);
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  const [atTop, setAtTop] = useState(true);
+  const [active, setActive] = useState("");
+  const { scrollY, scrollYProgress } = useScroll();
+  const progress = useSpring(scrollYProgress, { stiffness: 220, damping: 32, restDelta: 0.001 });
+
+  useMotionValueEvent(scrollY, "change", (current) => {
+    setAtTop(current < 80);
+    const line = window.innerHeight * 0.35;
+    let found = "";
+    for (const n of NAV) {
+      const r = document.querySelector(n.href)?.getBoundingClientRect();
+      if (r && r.top <= line && r.bottom > line) found = n.href;
+    }
+    setActive(found);
+  });
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
@@ -34,26 +66,26 @@ function Header({ signedIn, advertiserStart, influencerStart }: { signedIn: bool
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
+  // Hide while reading down the page, come back as soon as the visitor scrolls up.
+  const hidden = direction === "down" && !atTop && !open;
+
   return (
-    <header className={`lp-header ${scrolled ? "lp-scrolled" : ""}`}>
+    <motion.header className={`lp-header ${atTop ? "" : "lp-scrolled"}`} animate={{ y: hidden ? "-100%" : "0%" }} transition={{ duration: 0.35, ease: EASE }}>
       <div className="lp-wide lp-header-row">
         <a href="#top" className="lp-brand" aria-label="ZyroXQ home">
-          <Logo size={30} />
+          <Logo size={34} />
         </a>
         <nav className={`lp-nav ${open ? "lp-open" : ""}`} id="lp-nav" aria-label="Main">
           <ul>
             {NAV.map((n) => (
               <li key={n.href}>
-                <a href={n.href} onClick={() => setOpen(false)}>
+                <a href={n.href} className={active === n.href ? "lp-current" : ""} aria-current={active === n.href ? "location" : undefined} onClick={() => setOpen(false)}>
                   {n.label}
                 </a>
               </li>
             ))}
           </ul>
           <div className="lp-nav-actions">
-            <Link className="lp-signin" to={signedIn ? "/app" : "/login"}>
-              {signedIn ? "Open app" : "Log In"}
-            </Link>
             {!signedIn && (
               <Cta to={influencerStart} variant="outline">
                 Join as a Creator
@@ -67,56 +99,36 @@ function Header({ signedIn, advertiserStart, influencerStart }: { signedIn: bool
           <span className="lp-sr">{open ? "Close menu" : "Open menu"}</span>
         </button>
       </div>
-    </header>
+      <motion.span className="lp-scrollbar" style={{ scaleX: progress }} aria-hidden />
+    </motion.header>
   );
 }
 
 const SLIDES = [
-  {
-    img: "hero-agents.webp",
-    alt: "ZyroXQ campaign dashboard: five creators at different negotiation rounds, sample data",
-    eyebrow: "Agent negotiation",
-    title: "Your agent talks to every creator’s agent",
-    text: "Offers and counters move over A2A in parallel, and every step stays inside the budget, ceilings and rounds you set.",
-    link: "#negotiate",
-    linkLabel: "See how it negotiates",
-  },
-  {
-    img: "hero-proof.webp",
-    alt: "ZyroXQ content agent report: brand mentions found in captions and logo visible on screen, sample data",
-    eyebrow: "Content agent",
-    title: "The video is checked before anyone is paid",
-    text: "Brand said 4 times in the creator’s voice? Logo on screen? Disclosure in the description? The content agent reads it from the video.",
-    link: "#verify",
-    linkLabel: "See the checks",
-  },
-  {
-    img: "hero-escrow.webp",
-    alt: "ZyroXQ escrow view: payment mandate, payout split and deal timeline, sample testnet data",
-    eyebrow: "Escrow payouts · testnet",
-    title: "Funds wait in escrow until the proof is in",
-    text: "Your wallet signs the Payment Mandate. The fixed fee is released on verified proof, performance at T+7 days, and the rest is refunded.",
-    link: "#technology",
-    linkLabel: "What is live today",
-  },
+  { img: "hero-agents.webp", alt: "Campaign dashboard with creators at different negotiation rounds, sample data", eyebrow: "Agent negotiation", title: "Your agent talks to every creator’s agent", link: "#negotiate" },
+  { img: "hero-proof.webp", alt: "Content agent report on brand mentions and logo visibility, sample data", eyebrow: "Content agent", title: "Every video is checked before payout", link: "#verify" },
+  { img: "hero-escrow.webp", alt: "Escrow view with payment mandate and payout split, sample testnet data", eyebrow: "Escrow · testnet", title: "Funds wait in escrow until proof is in", link: "#payouts" },
 ];
+
+const SLIDE_MS = 6000;
 
 function HeroCarousel() {
   const [i, setI] = useState(0);
   const [paused, setPaused] = useState(false);
+  const touch = useRef<number | null>(null);
+  const still = useReducedMotion();
   const n = SLIDES.length;
   const go = useCallback((d: number) => setI((v) => (v + d + n) % n), [n]);
 
   useEffect(() => {
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (paused || still) return;
-    const t = window.setTimeout(() => go(1), 7000);
+    const t = window.setTimeout(() => go(1), SLIDE_MS);
     return () => window.clearTimeout(t);
-  }, [i, paused, go]);
+  }, [i, paused, go, still]);
 
   return (
     <div
-      className="lp-carousel"
+      className={`lp-carousel ${paused || still ? "lp-paused" : ""}`}
       role="region"
       aria-roledescription="carousel"
       aria-label="ZyroXQ highlights"
@@ -124,6 +136,17 @@ function HeroCarousel() {
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowLeft") go(-1);
+        if (e.key === "ArrowRight") go(1);
+      }}
+      onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        if (touch.current === null) return;
+        const dx = e.changedTouches[0].clientX - touch.current;
+        if (Math.abs(dx) > 40) go(dx < 0 ? 1 : -1);
+        touch.current = null;
+      }}
     >
       {SLIDES.map((s, k) => (
         <div key={s.img} className={`lp-slide ${k === i ? "lp-on" : ""}`} role="group" aria-roledescription="slide" aria-label={`${k + 1} of ${n}`} aria-hidden={k !== i}>
@@ -131,17 +154,18 @@ function HeroCarousel() {
           <div className="lp-slide-copy">
             <p className="lp-slide-eyebrow">{s.eyebrow}</p>
             <h2>{s.title}</h2>
-            <p>{s.text}</p>
             <a href={s.link} tabIndex={k === i ? 0 : -1}>
-              {s.linkLabel}
+              See more <Icon name="arrow" size={16} />
             </a>
           </div>
         </div>
       ))}
       <div className="lp-carousel-ui">
-        <div className="lp-progress" aria-hidden>
+        <div className="lp-progress">
           {SLIDES.map((s, k) => (
-            <span key={s.img} className={k === i ? "lp-on" : ""} />
+            <button key={s.img} type="button" className={k === i ? "lp-on" : k < i ? "lp-done" : ""} onClick={() => setI(k)} aria-label={`Show slide ${k + 1}: ${s.eyebrow}`} aria-current={k === i}>
+              <span key={k === i ? `on-${i}` : "off"} style={{ animationDuration: `${SLIDE_MS}ms` }} />
+            </button>
           ))}
         </div>
         <div className="lp-arrows">
@@ -153,24 +177,231 @@ function HeroCarousel() {
           </button>
         </div>
       </div>
-      <p className="lp-sample-tag">Illustrative previews · sample data</p>
+      <p className="lp-sample-tag">Sample data</p>
     </div>
   );
 }
 
 const STEPS = [
-  { title: "Set your limits", text: "Budget, max fee, max CPM, deliverable and the content checks the video must pass." },
-  { title: "Agents negotiate", text: "Your agent finds creators by niche and negotiates with their agents over A2A." },
-  { title: "You sign once", text: "Rules check the agreed terms; your browser wallet signs the Payment Mandate." },
-  { title: "Proof releases pay", text: "The verifier checks the post. Escrow pays the creator and refunds the rest." },
+  { icon: "key", title: "Set your limits", detail: "Budget, max fee, max CPM and the checks a video must pass.", points: ["Budget reserved up front", "Fee and CPM ceilings", "Content checks"] },
+  { icon: "agents", title: "Agents negotiate", detail: "Your agent sends offers to creator agents over A2A. Rules decide every reply.", points: ["Parallel offers", "Round limits", "Floors stay private"] },
+  { icon: "shield", title: "You sign once", detail: "Terms are re-checked, then your wallet signs the Payment Mandate.", points: ["Policy check first", "EIP-712 in your wallet", "AI never signs"] },
+  { icon: "eye", title: "Proof releases pay", detail: "The post is verified, then escrow pays out and refunds the rest.", points: ["YouTube checks", "Fixed, then performance", "Unused budget refunded"] },
 ];
+
+function Steps() {
+  const [cur, setCur] = useState(0);
+  const [auto, setAuto] = useState(true);
+  const [visible, setVisible] = useState(false);
+  const still = useReducedMotion();
+  const tabs = useRef<(HTMLButtonElement | null)[]>([]);
+  const reveal = useReveal();
+
+  useEffect(() => {
+    if (!auto || !visible || still) return;
+    const t = window.setTimeout(() => setCur((c) => (c + 1) % STEPS.length), 4500);
+    return () => window.clearTimeout(t);
+  }, [cur, auto, visible, still]);
+
+  const pick = (k: number, focus = false) => {
+    setAuto(false);
+    setCur(k);
+    if (focus) tabs.current[k]?.focus();
+  };
+  const onKey = (e: ReactKeyboardEvent) => {
+    const map: Record<string, number> = { ArrowRight: cur + 1, ArrowDown: cur + 1, ArrowLeft: cur - 1, ArrowUp: cur - 1, Home: 0, End: STEPS.length - 1 };
+    if (!(e.key in map)) return;
+    e.preventDefault();
+    pick((map[e.key] + STEPS.length) % STEPS.length, true);
+  };
+  const s = STEPS[cur];
+  const fill = cur / (STEPS.length - 1);
+
+  return (
+    <motion.div className="lp-stepper" {...reveal(0.1)} onViewportEnter={() => setVisible(true)} onViewportLeave={() => setVisible(false)}>
+      <div className="lp-step-tabs" role="tablist" aria-label="Deal flow steps" onKeyDown={onKey}>
+        <span className="lp-step-line" aria-hidden>
+          <span style={{ transform: `scaleX(${fill})`, "--s": fill } as CSSProperties} />
+        </span>
+        {STEPS.map((st, k) => (
+          <button
+            key={st.title}
+            ref={(el) => {
+              tabs.current[k] = el;
+            }}
+            type="button"
+            role="tab"
+            id={`lp-step-${k}`}
+            aria-selected={k === cur}
+            aria-controls="lp-step-panel"
+            tabIndex={k === cur ? 0 : -1}
+            className={`lp-step-tab ${k === cur ? "lp-on" : ""} ${k < cur ? "lp-done" : ""}`}
+            onClick={() => pick(k)}
+          >
+            <span className="lp-step-n">{String(k + 1).padStart(2, "0")}</span>
+            <span className="lp-step-t">{st.title}</span>
+          </button>
+        ))}
+      </div>
+      <motion.div
+        className="lp-step-panel"
+        role="tabpanel"
+        id="lp-step-panel"
+        aria-labelledby={`lp-step-${cur}`}
+        key={cur}
+        initial={{ opacity: 0, x: 24 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.4, ease: EASE }}
+      >
+        <span className="lp-step-ic" aria-hidden>
+          <Icon name={s.icon} size={30} />
+        </span>
+        <div>
+          <h3>{s.title}</h3>
+          <p>{s.detail}</p>
+        </div>
+        <ul>
+          {s.points.map((p) => (
+            <li key={p}>
+              <Icon name="check" size={18} />
+              {p}
+            </li>
+          ))}
+        </ul>
+        <div className="lp-step-nav">
+          <button type="button" onClick={() => pick((cur - 1 + STEPS.length) % STEPS.length)} aria-label="Previous step">
+            <Icon name="arrowLeft" size={20} />
+          </button>
+          <button type="button" onClick={() => pick((cur + 1) % STEPS.length)} aria-label="Next step">
+            <Icon name="arrow" size={20} />
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+/** Same formula as agent_policy/pricing.py (hybrid): fixed + min(cap − fixed, views/1000 × CPM), rounded down to the cent. */
+function payout(fixedUsd: number, cpmUsd: number, capUsd: number, views: number) {
+  const cents = (v: number) => Math.round(v * 100);
+  const cap = cents(capUsd);
+  const fixed = Math.min(cents(fixedUsd), cap);
+  const variable = Math.floor((views * cents(cpmUsd)) / 1000);
+  const performance = Math.max(0, Math.min(cap - fixed, variable));
+  return { fixed, performance, refund: cap - fixed - performance, cap, capped: variable > performance };
+}
+
+const usd = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+type RangeProps = { id: string; label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format: (v: number) => string };
+
+function Range({ id, label, value, min, max, step, onChange, format }: RangeProps) {
+  const pct = ((value - min) / (max - min)) * 100;
+  return (
+    <div className="lp-range">
+      <label htmlFor={id}>
+        <span>{label}</span>
+        <output htmlFor={id}>{format(value)}</output>
+      </label>
+      <input id={id} type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ "--p": `${pct}%` } as CSSProperties} />
+    </div>
+  );
+}
+
+function PayoutCalculator() {
+  const [fixed, setFixed] = useState(19);
+  const [cpm, setCpm] = useState(2.5);
+  const [cap, setCap] = useState(40);
+  const [views, setViews] = useState(8000);
+  const reveal = useReveal();
+  const r = payout(fixed, cpm, cap, views);
+  const w = (c: number) => `${r.cap ? (c / r.cap) * 100 : 0}%`;
+
+  return (
+    <section className="lp-payouts" id="payouts" aria-labelledby="payouts-title">
+      <div className="lp-container">
+        <motion.div className="lp-payouts-head" {...reveal()}>
+          <p className="lp-eyebrow">Payout math</p>
+          <h2 id="payouts-title">See where the money goes</h2>
+          <p>Move the sliders. Same formula the escrow enforces.</p>
+        </motion.div>
+        <div className="lp-calc">
+          <motion.div className="lp-calc-inputs" {...reveal(0.05)}>
+            <Range
+              id="calc-fixed"
+              label="Fixed fee"
+              value={fixed}
+              min={0}
+              max={200}
+              step={1}
+              format={(v) => `$${v}`}
+              onChange={(v) => {
+                setFixed(v);
+                if (v > cap) setCap(Math.ceil(v / 5) * 5);
+              }}
+            />
+            <Range id="calc-cpm" label="Per 1K views" value={cpm} min={0} max={10} step={0.1} format={(v) => `$${v.toFixed(2)}`} onChange={setCpm} />
+            <Range
+              id="calc-cap"
+              label="Escrow cap"
+              value={cap}
+              min={10}
+              max={500}
+              step={5}
+              format={(v) => `$${v}`}
+              onChange={(v) => {
+                setCap(v);
+                if (fixed > v) setFixed(v);
+              }}
+            />
+            <Range id="calc-views" label="Verified views" value={views} min={0} max={100000} step={500} format={(v) => v.toLocaleString("en-US")} onChange={setViews} />
+          </motion.div>
+          <motion.div className="lp-calc-out" aria-live="polite" {...reveal(0.15)}>
+            <p className="lp-calc-total">
+              <span>Creator is paid</span>
+              <strong>{usd(r.fixed + r.performance)}</strong>
+              <small>of {usd(r.cap)} in escrow</small>
+            </p>
+            <div className="lp-stack" role="img" aria-label={`Fixed ${usd(r.fixed)}, performance ${usd(r.performance)}, refunded ${usd(r.refund)}`}>
+              <span className="lp-s-fixed" style={{ width: w(r.fixed) }} />
+              <span className="lp-s-perf" style={{ width: w(r.performance) }} />
+              <span className="lp-s-refund" style={{ width: w(r.refund) }} />
+            </div>
+            <dl className="lp-legend">
+              <div>
+                <dt>
+                  <i className="lp-s-fixed" /> Fixed
+                </dt>
+                <dd>{usd(r.fixed)}</dd>
+              </div>
+              <div>
+                <dt>
+                  <i className="lp-s-perf" /> Performance
+                </dt>
+                <dd>{usd(r.performance)}</dd>
+                {r.capped && <small>cap reached</small>}
+              </div>
+              <div>
+                <dt>
+                  <i className="lp-s-refund" /> Refunded
+                </dt>
+                <dd>{usd(r.refund)}</dd>
+              </div>
+            </dl>
+            <p className="lp-calc-note">Example numbers · testnet only</p>
+          </motion.div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 const FEATURES: { id: string; eyebrow: string; title: string; text: string; img: string; alt: string; status: Status; note?: string }[] = [
   {
     id: "negotiate",
     eyebrow: "Negotiate",
-    title: "Let agents agree on the deal, inside your rules",
-    text: "Your advertiser agent discovers creators through their Agent Cards and negotiates fixed fees, per-1K-view rates and caps in parallel. A deterministic policy engine decides every accept or counter. The model only suggests and explains.",
+    title: "Agents agree on the deal, inside your rules",
+    text: "Offers and counters over A2A. A rules engine decides every reply.",
     img: "feat-negotiate.webp",
     alt: "A2A negotiation thread next to your limits and the policy decision, sample data",
     status: "built",
@@ -178,18 +409,18 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
   {
     id: "verify",
     eyebrow: "Verify",
-    title: "Know why a video passed — or why it didn’t",
-    text: "The verifier checks channel ownership, publish window, length and disclosure through the YouTube Data API. The content agent counts brand mentions in captions and looks for your logo on screen. A rejected creator sees exactly what to fix and can resubmit before the deadline.",
+    title: "Know why a video passed — or didn’t",
+    text: "YouTube checks, brand mentions and logo detection. Creators can fix and resubmit.",
     img: "feat-verify.webp",
     alt: "Rejected proof with the reasons and fixes shown to the creator, sample data",
     status: "beta",
-    note: "logo detection is advisory and goes to advertiser review",
+    note: "logo detection is advisory",
   },
   {
     id: "measure",
     eyebrow: "Measure",
     title: "See where every dollar went",
-    text: "Track what is locked in escrow, what was paid for verified content and what came back to you. Views come from the platform API, never from the creator’s own report.",
+    text: "Locked, paid and refunded — with views from the platform API.",
     img: "feat-measure.webp",
     alt: "Campaign results with escrow totals and a views-per-day chart, sample data",
     status: "beta",
@@ -197,35 +428,119 @@ const FEATURES: { id: string; eyebrow: string; title: string; text: string; img:
   {
     id: "connect",
     eyebrow: "Connect",
-    title: "Infrastructure other agents can run on",
-    text: "Every creator agent publishes an A2A Agent Card. Channel data is exposed as MCP tools, so your own agents can search creators and read channel details. Rate cards stay private to the creator.",
+    title: "Built for other agents too",
+    text: "A2A Agent Cards and MCP tools. Rate cards stay private.",
     img: "feat-scale.webp",
     alt: "Creator Agent Card and the MCP tools list, sample data",
     status: "built",
   },
 ];
 
-const TECH: { name: string; role: string; status: Status; note?: string }[] = [
-  { name: "A2A protocol", role: "Agent Cards & offers", status: "built" },
-  { name: "MCP", role: "Creator & channel tools", status: "built" },
-  { name: "LangGraph", role: "Agent workflows", status: "built" },
-  { name: "YouTube Data API", role: "Proof & channel checks", status: "built" },
-  { name: "Google sign-in", role: "Accounts & channel ownership", status: "built" },
-  { name: "Claude", role: "Explanations & vision checks", status: "built" },
-  { name: "PostgreSQL", role: "Deals, policies, audit log", status: "built" },
-  { name: "HashKey Payment (HSP)", role: "Cart & Payment Mandates", status: "integrating", note: "simulated until hosted access is confirmed" },
-  { name: "HashKey Chain", role: "Escrow contract, chain 133", status: "integrating", note: "testnet; contract not yet deployed" },
-  { name: "USDC · EIP-3009", role: "Signed transfer authorizations", status: "integrating", note: "testnet only" },
+/** Feature screenshot that tilts slightly toward the mouse pointer. */
+function TiltFigure({ src, alt }: { src: string; alt: string }) {
+  const ref = useRef<HTMLElement>(null);
+  const still = useReducedMotion();
+  const move = (e: ReactPointerEvent) => {
+    const el = ref.current;
+    if (!el || e.pointerType !== "mouse" || still) return;
+    const b = el.getBoundingClientRect();
+    el.style.setProperty("--rx", `${((e.clientY - b.top) / b.height - 0.5) * -6}deg`);
+    el.style.setProperty("--ry", `${((e.clientX - b.left) / b.width - 0.5) * 8}deg`);
+  };
+  const reset = () => {
+    ref.current?.style.setProperty("--rx", "0deg");
+    ref.current?.style.setProperty("--ry", "0deg");
+  };
+  return (
+    <figure className="lp-feature-img" ref={ref} onPointerMove={move} onPointerLeave={reset}>
+      <div className="lp-tilt">
+        <img src={src} alt={alt} loading="lazy" />
+      </div>
+      <figcaption>Sample data</figcaption>
+    </figure>
+  );
+}
+
+function Features() {
+  const reveal = useReveal();
+  return (
+    <section className="lp-band lp-features" id="product" aria-label="Product">
+      <div className="lp-container">
+        {FEATURES.map((f, k) => (
+          <motion.article key={f.id} id={f.id} className={`lp-feature ${k % 2 ? "lp-flip" : ""}`} aria-labelledby={`${f.id}-title`} {...reveal()}>
+            <div className="lp-feature-copy">
+              <p className="lp-feature-eyebrow">
+                {f.eyebrow} <StatusTag status={f.status} note={f.note} />
+              </p>
+              <h3 id={`${f.id}-title`}>{f.title}</h3>
+              <p>{f.text}</p>
+              {f.note && <p className="lp-note">Note: {f.note}.</p>}
+              <a className="lp-more" href={DOCS} target="_blank" rel="noreferrer">
+                Learn more <Icon name="arrow" size={16} />
+              </a>
+            </div>
+            <TiltFigure src={`${IMG}/${f.img}`} alt={f.alt} />
+          </motion.article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+const FAQ = [
+  { q: "Does real money move today?", a: "No. It runs on HashKey Chain testnet; HSP is simulated and the escrow contract is not deployed yet." },
+  { q: "Can the AI spend my budget?", a: "No. Rules decide every offer and only your wallet signs." },
+  { q: "Does HSP guarantee the escrow?", a: "No. Release and refund rules live in ZyroXQ’s own escrow contract." },
+  { q: "Can advertisers see a creator’s floor?", a: "No. Rate cards never leave the creator’s side." },
 ];
 
+function Faq() {
+  const reveal = useReveal();
+  return (
+    <section className="lp-faq" id="faq" aria-labelledby="faq-title">
+      <div className="lp-container lp-faq-grid">
+        <motion.div {...reveal()}>
+          <p className="lp-eyebrow">FAQ</p>
+          <h2 id="faq-title">Straight answers</h2>
+          <a className="lp-more" href={DOCS} target="_blank" rel="noreferrer">
+            Read the docs <Icon name="arrow" size={16} />
+          </a>
+        </motion.div>
+        <div className="lp-faq-list">
+          {FAQ.map((f, k) => (
+            <motion.details key={f.q} open={k === 0} {...reveal(k * 0.06)}>
+              <summary>
+                {f.q}
+                <span className="lp-plus" aria-hidden />
+              </summary>
+              <p>{f.a}</p>
+            </motion.details>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const RESOURCES = [
-  { img: "res-escrow.webp", kind: "Guide", title: "How escrow-backed payouts work", text: "Funding evidence, the fixed and performance split, refunds and what happens when a payment is unclear." },
-  { img: "res-a2a.webp", kind: "Architecture", title: "Agent Cards and A2A negotiation", text: "How advertiser and creator agents find each other, exchange offers and sign terms." },
-  { img: "res-content.webp", kind: "Product", title: "What the content agent checks in a video", text: "Spoken brand mentions from captions, logo frames, disclosures — and how results are reviewed." },
+  { img: "res-escrow.webp", kind: "Guide", title: "How escrow payouts work" },
+  { img: "res-a2a.webp", kind: "Architecture", title: "Agent Cards and A2A" },
+  { img: "res-content.webp", kind: "Product", title: "What the content agent checks" },
 ];
 
 function Resources() {
   const track = useRef<HTMLUListElement>(null);
+  const [edge, setEdge] = useState({ start: true, end: false });
+  const reveal = useReveal();
+  const update = useCallback(() => {
+    const el = track.current;
+    if (el) setEdge({ start: el.scrollLeft < 8, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 8 });
+  }, []);
+  useEffect(() => {
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [update]);
   const scroll = (d: number) => {
     const el = track.current;
     if (!el) return;
@@ -235,35 +550,38 @@ function Resources() {
   return (
     <section className="lp-resources" id="resources" aria-labelledby="res-title">
       <div className="lp-container">
-        <div className="lp-res-head">
+        <motion.div className="lp-res-head" {...reveal()}>
           <div>
-            <h2 id="res-title">Learn how ZyroXQ works under the hood</h2>
-            <p>Plain-language guides to the agents, the rules and the payment flow — straight from the project documentation.</p>
+            <h2 id="res-title">Under the hood</h2>
             <Cta to={DOCS} size="lg">
-              Read the documentation
+              Read the docs
             </Cta>
           </div>
-          <div className="lp-arrows lp-arrows-dark">
-            <button type="button" onClick={() => scroll(-1)} aria-label="Previous guides">
+          <div className="lp-arrows">
+            <button type="button" onClick={() => scroll(-1)} aria-label="Previous guides" disabled={edge.start}>
               <Icon name="arrowLeft" size={26} />
             </button>
-            <button type="button" onClick={() => scroll(1)} aria-label="Next guides">
+            <button type="button" onClick={() => scroll(1)} aria-label="Next guides" disabled={edge.end}>
               <Icon name="arrow" size={26} />
             </button>
           </div>
-        </div>
-        <ul className="lp-res-track" ref={track}>
-          {RESOURCES.map((r) => (
-            <li key={r.title}>
+        </motion.div>
+        <ul className="lp-res-track" ref={track} onScroll={update}>
+          {RESOURCES.map((r, k) => (
+            <motion.li key={r.title} {...reveal(k * 0.08)}>
               <a href={DOCS} target="_blank" rel="noreferrer" className="lp-res-card">
-                <img src={`${IMG}/${r.img}`} alt="" loading="lazy" />
+                <span className="lp-res-img">
+                  <img src={`${IMG}/${r.img}`} alt="" loading="lazy" />
+                </span>
                 <span className="lp-res-body">
                   <small>{r.kind}</small>
                   <strong>{r.title}</strong>
-                  <span>{r.text}</span>
+                  <em>
+                    Read <Icon name="arrow" size={16} />
+                  </em>
                 </span>
               </a>
-            </li>
+            </motion.li>
           ))}
         </ul>
       </div>
@@ -271,280 +589,216 @@ function Resources() {
   );
 }
 
+function BackToTop({ direction }: { direction: Direction }) {
+  const { scrollY } = useScroll();
+  const [far, setFar] = useState(false);
+  useMotionValueEvent(scrollY, "change", (current) => setFar(current > window.innerHeight * 1.2));
+  // Offer the shortcut when the visitor starts heading back up.
+  const show = far && direction === "up";
+  return (
+    <a href="#top" className={`lp-top ${show ? "lp-on" : ""}`} aria-label="Back to top" tabIndex={show ? 0 : -1}>
+      <Icon name="arrowUp" size={22} />
+    </a>
+  );
+}
+
 export function Landing() {
   const { me } = useSession();
   const signedIn = !!me;
-  const advertiserStart = signedIn ? "/app" : api.loginUrl("advertiser");
-  const influencerStart = signedIn ? "/app" : api.loginUrl("influencer");
+  const advertiserStart = signedIn ? "/app" : "/login?as=advertiser";
+  const influencerStart = signedIn ? "/app" : "/login?as=influencer";
+
+  const { scrollY } = useScroll();
+  const [scrollDirection, setScrollDirection] = useState<Direction>("down");
+  useMotionValueEvent(scrollY, "change", (current) => {
+    const diff = current - (scrollY.getPrevious() ?? current);
+    if (diff !== 0) setScrollDirection(diff > 0 ? "down" : "up");
+  });
 
   useEffect(() => {
     document.title = "ZyroXQ — Influencer marketing, powered by AI agents";
   }, []);
 
+  const reveal = (delay = 0) => revealProps(scrollDirection, delay);
+
   return (
-    <div className="lp" id="top">
-      <a className="lp-skip" href="#main">
-        Skip to content
-      </a>
-      <Header signedIn={signedIn} advertiserStart={advertiserStart} influencerStart={influencerStart} />
+    <LazyMotion features={domAnimation} strict>
+      <MotionConfig reducedMotion="user">
+      <ScrollDirection.Provider value={scrollDirection}>
+        <div className="lp" id="top">
+          <a className="lp-skip" href="#main">
+            Skip to content
+          </a>
+          <Header direction={scrollDirection} signedIn={signedIn} advertiserStart={advertiserStart} influencerStart={influencerStart} />
 
-      <main id="main">
-        {/* Hero: copy on the left, product carousel on the right */}
-        <section className="lp-hero" aria-labelledby="hero-title">
-          <div className="lp-hero-copy">
-            <h1 id="hero-title">
-              Your agents negotiate. <span className="lp-hl">Your rules decide.</span>
-            </h1>
-            <p className="lp-hero-strong">
-              Your limits. Your wallet. Your verified results.
-              <br />
-              All in one agent-driven deal flow.
-            </p>
-            <p className="lp-hero-lead">
-              ZyroXQ lets AI agents discover creators and negotiate sponsorships for you, then holds the payment in escrow until the content is verified. The AI
-              proposes, deterministic rules decide, and only your wallet signs.
-            </p>
-            <div className="lp-cta-row">
-              <Cta to={advertiserStart} size="lg">
-                Launch a Campaign
-              </Cta>
-              <Cta to="#how" variant="outline" size="lg">
-                Explore How It Works
-              </Cta>
-            </div>
-          </div>
-          <HeroCarousel />
-        </section>
-
-        {/* Core rule card */}
-        <section className="lp-rule" aria-labelledby="rule-title">
-          <div className="lp-container">
-            <div className="lp-rule-card">
-              <p className="lp-rule-label">The ZyroXQ core rule</p>
-              <div className="lp-rule-grid">
-                <div>
-                  <blockquote>
-                    <p id="rule-title">The AI proposes. Deterministic rules decide. Authorized code signs.</p>
-                  </blockquote>
-                  <p className="lp-rule-sub">No payment ever depends on model output alone. Signing is never an AI tool.</p>
-                  <Cta to={DOCS} size="lg">
-                    Read the design
+          <main id="main">
+            {/* Hero */}
+            <section className="lp-hero" aria-labelledby="hero-title">
+              <motion.div className="lp-hero-copy" initial={{ opacity: 0, y: 32 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, ease: EASE }}>
+                <p className="lp-pill">
+                  <span className="lp-pill-dot" aria-hidden />
+                  HashKey A2A track · testnet
+                </p>
+                <h1 id="hero-title">
+                  Your agents negotiate. <span className="lp-hl">Your rules decide.</span>
+                </h1>
+                <p className="lp-hero-lead">AI agents close creator deals. Escrow pays only for verified content.</p>
+                <div className="lp-cta-row">
+                  <Cta to={advertiserStart} size="lg">
+                    Launch a Campaign
+                  </Cta>
+                  <Cta to="#how" variant="outline" size="lg">
+                    How It Works
                   </Cta>
                 </div>
-                <div className="lp-rule-art">
-                  <img src={`${IMG}/principle.webp`} alt="Diagram: the AI proposes, deterministic rules decide, authorized code signs" loading="lazy" />
+              </motion.div>
+              <HeroCarousel />
+            </section>
+
+            {/* Core rule */}
+            <section className="lp-rule" aria-labelledby="rule-title">
+              <div className="lp-container">
+                <motion.div className="lp-rule-card" {...reveal()}>
+                  <p className="lp-rule-label">The core rule</p>
+                  <div className="lp-rule-grid">
+                    <div>
+                      <blockquote>
+                        <p id="rule-title">
+                          The AI <em>proposes</em>. Rules <em>decide</em>. Your wallet <em>signs</em>.
+                        </p>
+                      </blockquote>
+                      <Cta to={DOCS} size="lg">
+                        Read the design
+                      </Cta>
+                    </div>
+                    <div className="lp-rule-art">
+                      <img src={`${IMG}/principle.webp`} alt="Diagram: the AI proposes, deterministic rules decide, authorized code signs" loading="lazy" />
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+            </section>
+
+            {/* How it works */}
+            <section className="lp-band lp-band-alt" id="how" aria-labelledby="how-title">
+              <div className="lp-container">
+                <motion.div className="lp-narrow" {...reveal()}>
+                  <p className="lp-eyebrow">How it works</p>
+                  <h2 id="how-title">Your terms. Your limits. Your keys.</h2>
+                </motion.div>
+                <Steps />
+              </div>
+            </section>
+
+            <PayoutCalculator />
+            <Features />
+
+            {/* For creators */}
+            <section className="lp-band lp-band-tight" id="creators" aria-labelledby="creators-title">
+              <div className="lp-container">
+                <motion.div className="lp-split" {...reveal()}>
+                  <img src={`${IMG}/creator.webp`} alt="Creator agent profile with niches, a private rate card and the agent inbox, sample data" loading="lazy" />
+                  <div className="lp-split-copy">
+                    <p className="lp-eyebrow">For creators</p>
+                    <p className="lp-split-quote" id="creators-title">
+                      Your agent negotiates above your private floor.
+                    </p>
+                    <ul className="lp-split-list">
+                      <li>Niches from your channel</li>
+                      <li>Rate card stays private</li>
+                      <li>Fix and resubmit if rejected</li>
+                    </ul>
+                    <Cta to={influencerStart}>Join as a Creator</Cta>
+                  </div>
+                </motion.div>
+              </div>
+            </section>
+
+            <Faq />
+            <Resources />
+          </main>
+
+          <footer className="lp-footer">
+            <div className="lp-wide">
+              <div className="lp-footer-top">
+                <Logo size={38} tone="dark" />
+                <a className="lp-social" href={REPO} target="_blank" rel="noreferrer" aria-label="ZyroXQ on GitHub">
+                  <Icon name="github" size={26} />
+                </a>
+              </div>
+              <div className="lp-footer-cols">
+                <nav aria-label="Product">
+                  <h2>Product</h2>
+                  <ul>
+                    <li>
+                      <a href="#negotiate">Negotiation</a>
+                    </li>
+                    <li>
+                      <a href="#verify">Verification</a>
+                    </li>
+                    <li>
+                      <a href="#payouts">Payouts</a>
+                    </li>
+                  </ul>
+                </nav>
+                <nav aria-label="Get started">
+                  <h2>Get started</h2>
+                  <ul>
+                    <li>
+                      <a href={advertiserStart}>Advertisers</a>
+                    </li>
+                    <li>
+                      <a href={influencerStart}>Creators</a>
+                    </li>
+                    <li>
+                      <a href="#faq">FAQ</a>
+                    </li>
+                    <li>
+                      <Link to="/login">Log in</Link>
+                    </li>
+                  </ul>
+                </nav>
+                <nav aria-label="Project">
+                  <h2>Project</h2>
+                  <ul>
+                    <li>
+                      <a href={DOCS} target="_blank" rel="noreferrer">
+                        Docs
+                      </a>
+                    </li>
+                    <li>
+                      <a href={REPO} target="_blank" rel="noreferrer">
+                        GitHub
+                      </a>
+                    </li>
+                    <li>
+                      <span className="lp-soon">Privacy · soon</span>
+                    </li>
+                    <li>
+                      <span className="lp-soon">Terms · soon</span>
+                    </li>
+                  </ul>
+                </nav>
+                <div className="lp-footer-cta">
+                  <h2>Build campaigns on trust</h2>
+                  <div className="lp-cta-row">
+                    <Cta to={advertiserStart}>Get Started</Cta>
+                    <Cta to={influencerStart} variant="outline">
+                      I’m a creator
+                    </Cta>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Intro statement */}
-        <section className="lp-band" aria-labelledby="intro-title">
-          <div className="lp-container lp-narrow">
-            <h2 id="intro-title">Turn every sponsorship into a deal you can verify</h2>
-            <p>
-              Creator deals still run on DMs, spreadsheets and trust. Rates get haggled by hand, posts are checked by eye, and payment is either sent too early or
-              chased for weeks.
-            </p>
-            <p className="lp-strong">
-              ZyroXQ gives advertisers and creators agents that agree on clear terms, a verifier that checks the published content, and an escrow that pays only
-              for what was delivered.
-            </p>
-            <Cta to={advertiserStart} size="lg">
-              Launch a Campaign
-            </Cta>
-          </div>
-        </section>
-
-        {/* Creator split card */}
-        <section className="lp-band lp-band-tight" id="creators" aria-labelledby="creators-title">
-          <div className="lp-container">
-            <div className="lp-split">
-              <img src={`${IMG}/creator.webp`} alt="Creator agent profile with niches, a private rate card and the agent inbox, sample data" loading="lazy" />
-              <div className="lp-split-copy">
-                <p className="lp-eyebrow">For creators</p>
-                <p className="lp-split-quote" id="creators-title">
-                  Your agent negotiates above your private floor — and you see every term before anything is signed.
-                </p>
-                <ul className="lp-split-list">
-                  <li>Niches suggested from your YouTube channel, editable any time</li>
-                  <li>Your rate card never leaves your side</li>
-                  <li>Clear reasons and a resubmit window if a video is rejected</li>
-                </ul>
-                <Cta to={influencerStart} variant="dark">
-                  Join as a Creator
-                </Cta>
+              <div className="lp-footer-base">
+                <span>© {new Date().getFullYear()} ZyroXQ</span>
+                <span>HashKey A2A Settlement track · testnet</span>
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* Your terms + steps */}
-        <section className="lp-band" id="how" aria-labelledby="how-title">
-          <div className="lp-container">
-            <div className="lp-narrow">
-              <h2 id="how-title">Your terms. Your limits. Your keys.</h2>
-              <p className="lp-strong">One deal flow, with you in control at every step.</p>
-              <p>
-                You decide what a campaign may spend and what the video must contain. Agents do the back-and-forth, rules enforce your limits, and nothing moves
-                without your signature.
-              </p>
-            </div>
-            <ol className="lp-steps">
-              {STEPS.map((s, k) => (
-                <li key={s.title}>
-                  <span className="lp-step-n" aria-hidden>
-                    {String(k + 1).padStart(2, "0")}
-                  </span>
-                  <h3>
-                    <span className="lp-sr">Step {k + 1}: </span>
-                    {s.title}
-                  </h3>
-                  <p>{s.text}</p>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </section>
-
-        {/* Feature rows */}
-        <section className="lp-band lp-features" id="product" aria-label="Product">
-          <div className="lp-container">
-            {FEATURES.map((f, k) => (
-              <article key={f.id} id={f.id} className={`lp-feature ${k % 2 ? "lp-flip" : ""}`} aria-labelledby={`${f.id}-title`}>
-                <div className="lp-feature-copy">
-                  <p className="lp-feature-eyebrow">
-                    {f.eyebrow} <StatusTag status={f.status} note={f.note} />
-                  </p>
-                  <h3 id={`${f.id}-title`}>{f.title}</h3>
-                  <p>{f.text}</p>
-                  {f.note && <p className="lp-note">Note: {f.note}.</p>}
-                  <a className="lp-more" href={DOCS} target="_blank" rel="noreferrer">
-                    Learn more <Icon name="arrow" size={16} />
-                  </a>
-                </div>
-                <figure className="lp-feature-img">
-                  <img src={`${IMG}/${f.img}`} alt={f.alt} loading="lazy" />
-                  <figcaption>Illustrative preview · sample data</figcaption>
-                </figure>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        {/* Technology grid */}
-        <section className="lp-tech" id="technology" aria-labelledby="tech-title">
-          <div className="lp-container">
-            <p className="lp-eyebrow">Open standards</p>
-            <h2 id="tech-title">Creator deal technology you can inspect</h2>
-            <p className="lp-tech-lead">
-              ZyroXQ is built on open protocols and public APIs. Here is exactly what works today and what is still being integrated — this is a testnet project and
-              no real funds move.
-            </p>
-            <ul className="lp-tech-grid">
-              {TECH.map((t) => (
-                <li key={t.name}>
-                  <strong>{t.name}</strong>
-                  <span>{t.role}</span>
-                  <StatusTag status={t.status} note={t.note} />
-                  {t.note && <small>{t.note}</small>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
-
-        <Resources />
-      </main>
-
-      <footer className="lp-footer">
-        <div className="lp-wide">
-          <div className="lp-footer-top">
-            <Logo size={34} />
-            <a className="lp-social" href={REPO} target="_blank" rel="noreferrer" aria-label="ZyroXQ on GitHub">
-              <Icon name="github" size={26} />
-            </a>
-          </div>
-          <div className="lp-footer-cols">
-            <nav aria-label="Product">
-              <h2>Product</h2>
-              <ul>
-                <li>
-                  <a href="#negotiate">Agent negotiation</a>
-                </li>
-                <li>
-                  <a href="#verify">Content verification</a>
-                </li>
-                <li>
-                  <a href="#measure">Campaign results</a>
-                </li>
-                <li>
-                  <a href="#connect">Agent Cards &amp; MCP</a>
-                </li>
-                <li>
-                  <a href="#technology">What is live today</a>
-                </li>
-              </ul>
-            </nav>
-            <nav aria-label="Get started">
-              <h2>Get started</h2>
-              <ul>
-                <li>
-                  <a href={advertiserStart}>For advertisers</a>
-                </li>
-                <li>
-                  <a href={influencerStart}>For creators</a>
-                </li>
-                <li>
-                  <a href="#how">How it works</a>
-                </li>
-                <li>
-                  <Link to="/login">Log in</Link>
-                </li>
-              </ul>
-            </nav>
-            <nav aria-label="Project">
-              <h2>Project</h2>
-              <ul>
-                <li>
-                  <a href={DOCS} target="_blank" rel="noreferrer">
-                    Documentation
-                  </a>
-                </li>
-                <li>
-                  <a href={REPO} target="_blank" rel="noreferrer">
-                    GitHub
-                  </a>
-                </li>
-                <li>
-                  <span className="lp-soon">Privacy · coming soon</span>
-                </li>
-                <li>
-                  <span className="lp-soon">Terms · coming soon</span>
-                </li>
-                <li>
-                  <span className="lp-soon">Contact · coming soon</span>
-                </li>
-              </ul>
-            </nav>
-            <div className="lp-footer-cta">
-              <h2>Build campaigns on trust, not guesswork</h2>
-              <p>Sign in with Google as an advertiser or a creator. Your agent is ready in minutes.</p>
-              <div className="lp-cta-row">
-                <Cta to={advertiserStart}>Get Started</Cta>
-                <Cta to={influencerStart} variant="outline">
-                  I’m a creator
-                </Cta>
-              </div>
-            </div>
-          </div>
-          <div className="lp-footer-base">
-            <span>© {new Date().getFullYear()} ZyroXQ</span>
-            <span>Built for the HashKey “Agent Payments &amp; A2A Settlement” track · testnet</span>
-          </div>
+          </footer>
+          <BackToTop direction={scrollDirection} />
         </div>
-      </footer>
-    </div>
+      </ScrollDirection.Provider>
+      </MotionConfig>
+    </LazyMotion>
   );
 }

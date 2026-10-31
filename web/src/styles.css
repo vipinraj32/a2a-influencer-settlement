@@ -1,48 +1,56 @@
+/* Brand palette (matches the landing page): blue, orange, ink, paper. Every other shade is a mix of these. */
 :root {
-  --bg: #f6f7fb;
-  --surface: #ffffff;
-  --surface-2: #f1f3f9;
-  --border: #e3e6ef;
-  --text: #171a26;
-  --muted: #646b80;
-  --accent: #4f46e5;
-  --accent-ink: #ffffff;
-  --accent-soft: #eef0ff;
-  --good: #0f7b4b;
-  --good-soft: #e5f6ee;
-  --warn: #9a5b00;
-  --warn-soft: #fff4dc;
-  --bad: #b42335;
-  --bad-soft: #fdebed;
-  --info: #1d5fbf;
-  --info-soft: #e8f0fc;
-  --neutral-soft: #eef0f4;
+  --blue: rgb(73 169 222);
+  --orange: rgb(237 122 36);
+  --ink: rgb(5 23 48);
+  --paper: rgb(254 251 255);
+
+  --bg: color-mix(in srgb, var(--blue) 6%, var(--paper));
+  --surface: var(--paper);
+  --surface-2: color-mix(in srgb, var(--blue) 9%, var(--paper));
+  --border: color-mix(in srgb, var(--ink) 12%, var(--paper));
+  --text: var(--ink);
+  --muted: color-mix(in srgb, var(--ink) 66%, var(--paper));
+  --accent: var(--blue);
+  --accent-ink: var(--paper);
+  --accent-soft: color-mix(in srgb, var(--blue) 15%, var(--paper));
+  --cta: var(--orange);
+  --cta-ink: var(--paper);
+  --good: color-mix(in srgb, var(--blue) 62%, var(--ink));
+  --good-soft: color-mix(in srgb, var(--blue) 16%, var(--paper));
+  --warn: color-mix(in srgb, var(--orange) 78%, var(--ink));
+  --warn-soft: color-mix(in srgb, var(--orange) 13%, var(--paper));
+  --bad: color-mix(in srgb, var(--orange) 55%, var(--ink));
+  --bad-soft: color-mix(in srgb, var(--orange) 20%, var(--paper));
+  --info: var(--blue);
+  --info-soft: color-mix(in srgb, var(--blue) 14%, var(--paper));
+  --neutral-soft: color-mix(in srgb, var(--ink) 6%, var(--paper));
   --radius: 12px;
-  --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 6%);
+  --shadow: 0 1px 2px rgb(5 23 48 / 6%), 0 4px 14px -6px rgb(5 23 48 / 12%);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1017;
-    --surface: #161924;
-    --surface-2: #1d2130;
-    --border: #2a2f40;
-    --text: #e8eaf2;
-    --muted: #9aa1b5;
-    --accent: #8b85ff;
-    --accent-ink: #0e1017;
-    --accent-soft: #24234a;
-    --good: #4fd394;
-    --good-soft: #12301f;
-    --warn: #f3b94d;
-    --warn-soft: #362810;
-    --bad: #ff7b8a;
-    --bad-soft: #3a161c;
-    --info: #7fb0ff;
-    --info-soft: #162640;
-    --neutral-soft: #232838;
+    --bg: var(--ink);
+    --surface: color-mix(in srgb, var(--blue) 8%, var(--ink));
+    --surface-2: color-mix(in srgb, var(--blue) 13%, var(--ink));
+    --border: color-mix(in srgb, var(--paper) 14%, var(--ink));
+    --text: var(--paper);
+    --muted: color-mix(in srgb, var(--paper) 66%, var(--ink));
+    --accent: var(--blue);
+    --accent-ink: var(--ink);
+    --accent-soft: color-mix(in srgb, var(--blue) 22%, var(--ink));
+    --good: var(--blue);
+    --good-soft: color-mix(in srgb, var(--blue) 20%, var(--ink));
+    --warn: var(--orange);
+    --warn-soft: color-mix(in srgb, var(--orange) 18%, var(--ink));
+    --bad: color-mix(in srgb, var(--orange) 80%, var(--paper));
+    --bad-soft: color-mix(in srgb, var(--orange) 26%, var(--ink));
+    --info: var(--blue);
+    --info-soft: color-mix(in srgb, var(--blue) 18%, var(--ink));
+    --neutral-soft: color-mix(in srgb, var(--paper) 8%, var(--ink));
     --shadow: none;
     color-scheme: dark;
   }
@@ -56,7 +64,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 15px/1.5 Figtree, Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 a {
@@ -163,8 +171,9 @@ code,
   background: var(--surface-2);
 }
 .nav a.active {
-  color: var(--text);
+  color: var(--accent);
   background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .who {
@@ -509,6 +518,10 @@ textarea {
 }
 
 .btn {
+  transition:
+    transform 0.15s,
+    box-shadow 0.2s,
+    background-color 0.2s;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -524,15 +537,24 @@ textarea {
 }
 .btn:hover {
   text-decoration: none;
-  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--cta) 88%, var(--ink));
+}
+.btn-secondary:hover,
+.btn-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--cta);
+  color: var(--cta-ink);
+  box-shadow: 0 8px 18px -12px var(--cta);
 }
 .btn-secondary {
   background: var(--surface);
@@ -813,52 +835,13 @@ textarea {
   max-width: 100%;
 }
 
-/* ---- login ------------------------------------------------------------------------- */
-
-.login {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 420px);
-  gap: 3rem;
-  align-items: center;
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 2rem 1.5rem;
-}
-.login-hero h1 {
-  font-size: 2.1rem;
-  line-height: 1.2;
-  margin: 1.25rem 0 0.75rem;
-}
 .lead {
   color: var(--muted);
   font-size: 1.05rem;
 }
-.how {
-  padding-left: 1.2rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.how strong {
-  display: inline-block;
-  min-width: 5.5rem;
-}
-.login-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-.login-card h2 {
-  margin-bottom: 0.25rem;
-}
-.login-card p {
-  margin: 0 0 0.5rem;
-}
 
 @media (max-width: 900px) {
   .split,
-  .login,
   .grid-3 {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1110,18 +1093,17 @@ label.check input {
   object-fit: cover;
 }
 
-/* logo (shared with the app) */
+/* logo (shared with the app): files live in web/public */
 .zx-logo {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+  display: inline-block;
+  overflow: hidden;
+  flex: none;
+  line-height: 0;
 }
-.zx-word {
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: var(--lp-ink, var(--text));
-  line-height: 1;
+.zx-logo img {
+  display: block;
+  max-width: none;
 }
-.zx-word-accent {
-  color: var(--lp-accent, var(--accent));
+.zx-mark {
+  display: block;
 }

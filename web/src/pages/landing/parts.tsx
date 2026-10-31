@@ -44,6 +44,7 @@ const PATHS: Record<string, ReactNode> = {
   check: <path d="M5 12.5l4.2 4.2L19 7" />,
   arrow: <path d="M5 12h14M13 6l6 6-6 6" />,
   arrowLeft: <path d="M19 12H5M11 6l-6 6 6 6" />,
+  arrowUp: <path d="M12 19V5M6 11l6-6 6 6" />,
   agents: (
     <>
       <circle cx="6" cy="7" r="3" />
