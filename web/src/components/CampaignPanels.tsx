@@ -13,7 +13,9 @@ export function A2AChat({ deal, creator, avatar }: { deal: Deal; creator: string
   const end = useRef<HTMLDivElement>(null);
   const v = view.data;
   const count = v?.rounds.length ?? 0;
-  useEffect(() => end.current?.scrollIntoView({ block: "nearest" }), [count]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" }); // newer browsers return a Promise here: never hand it to React as a cleanup
+  }, [count]);
 
   if (view.error) return <p className="error small">{view.error}</p>;
   if (!v) return <Spinner label="Loading conversation…" />;

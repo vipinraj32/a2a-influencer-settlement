@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 import httpx
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -266,10 +267,10 @@ async def _checkpointer(settings: Settings, stack: contextlib.AsyncExitStack) ->
         return InMemorySaver()
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
 
-    pool = AsyncConnectionPool(settings.database_url, open=False, kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
-    await pool.open(wait=True, timeout=10)
+    from ..store.postgres import open_pool
+
+    pool = await open_pool(settings.database_url, max_size=5, autocommit=True, prepare_threshold=0, row_factory=dict_row)
     stack.push_async_callback(pool.close)
     saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
     await saver.setup()
@@ -337,6 +338,12 @@ def create_app(
     async def deal_error(_: Request, e: DealError) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=409)
 
+    @app.exception_handler(psycopg.OperationalError)
+    async def database_unavailable(request: Request, e: psycopg.OperationalError) -> JSONResponse:
+        # A connection dropped mid-query (the pool replaces it): nothing was half-applied that a retry would repeat badly
+        log.warning("database unavailable on %s %s: %s", request.method, request.url.path, str(e).splitlines()[0] if str(e) else type(e).__name__)
+        return JSONResponse({"detail": "The database is briefly unreachable. Please try again in a moment."}, status_code=503, headers={"Retry-After": "5"})
+
     # ---- access rules -------------------------------------------------------------
 
     async def readable_campaign(campaign_id: str, who: User | str) -> Campaign:
@@ -365,14 +372,13 @@ def create_app(
         request.session["oauth"] = {"state": oauth_state, "role": role}
         return RedirectResponse(oauth.authorize_url(oauth_state, youtube=role == "influencer"), status_code=303)
 
-    @app.get("/auth/google/callback", include_in_schema=False)
-    async def google_callback(request: Request, code: str = "", error: str = "") -> RedirectResponse:
-        pending = request.session.pop("oauth", None)
-        oauth_state = request.query_params.get("state", "")
-        if error or not code:
-            return to_frontend("/login", f"Google sign-in was cancelled ({error or 'no code'})")
-        if not pending or not secrets.compare_digest(pending["state"], oauth_state):
-            return to_frontend("/login", "sign-in expired, please try again")
+    # Browsers sometimes deliver the callback twice at once (prefetch, a double click, a retried redirect). The session
+    # cookie is rewritten by every response, so a losing duplicate used to overwrite the winner's signed-in cookie and
+    # bounce the user back to /login. Each OAuth state now runs once; every request carrying it shares the result.
+    sign_ins: dict[str, asyncio.Task[tuple[str | None, str]]] = {}
+
+    async def sign_in(pending: dict[str, Any], code: str) -> tuple[str | None, str]:
+        """(user id, "") on success, (None, reason) otherwise."""
         try:
             tokens = await oauth.exchange(code)
             info = await oauth.userinfo(tokens["access_token"])
@@ -380,22 +386,56 @@ def create_app(
             role = user.role if user else pending["role"]
             channel = await oauth.my_channel(tokens["access_token"], tokens.get("scope")) if role == "influencer" and pending["role"] == "influencer" else None
         except OAuthError as e:
-            return to_frontend("/login", str(e))
+            return None, str(e)
         if user is None:
             if role == "influencer" and channel is None:
-                return to_frontend("/login", "influencers must sign in with the Influencer button to connect YouTube")
+                return None, "influencers must sign in with the Influencer button to connect YouTube"
             user = User(id=new_id("USR"), email=info["email"], name=info.get("name", info["email"]), picture=info.get("picture", ""),
                         role=role, created_at=state.ctx.clock.now())  # fmt: skip
             if role == "influencer":
                 user.agent_signer, user.agent_key_encrypted = new_agent_key(settings.session_secret)
+            user = await state.ctx.store.create_user(user)  # another sign-in for the same email may have created it first
         user.name, user.picture = info.get("name", user.name), info.get("picture", user.picture)
         if channel is not None:
             if user.channel and user.channel.channel_id != channel.channel_id:
                 user.delegation = user.delegation_signature = ""  # the wallet must re-authorize the agent for the new channel
             user.channel = channel
         await state.ctx.store.save_user(user)
+        return user.id, ""
+
+    def shared_sign_in(oauth_state: str, pending: dict[str, Any], code: str) -> asyncio.Task[tuple[str | None, str]]:
+        task = sign_ins.get(oauth_state)
+        if task is None:
+            task = sign_ins[oauth_state] = asyncio.create_task(sign_in(pending, code))
+            asyncio.get_running_loop().call_later(120, sign_ins.pop, oauth_state, None)
+        return task
+
+    @app.get("/auth/google/callback", include_in_schema=False)
+    async def google_callback(request: Request, code: str = "", error: str = "") -> RedirectResponse:
+        oauth_state = request.query_params.get("state", "")
+        pending = request.session.get("oauth")
+
+        def failed(reason: str) -> RedirectResponse:
+            log.info("google sign-in sent back to /login: %s", reason)
+            if request.session.get("uid"):  # already signed in (an earlier callback finished): keep that session
+                return to_frontend("/app")
+            return to_frontend("/login", reason)
+
+        if error or not code:
+            return failed(f"Google sign-in was cancelled ({error or 'no code'})")
+        if oauth_state in sign_ins:  # a duplicate of a callback that is running or just finished
+            task = sign_ins[oauth_state]
+        elif pending and secrets.compare_digest(pending["state"], oauth_state):
+            task = shared_sign_in(oauth_state, pending, code)
+        elif pending and pending["state"] in sign_ins:  # a stale flow while the browser's current one is completing
+            task = sign_ins[pending["state"]]
+        else:
+            return failed("sign-in expired, please try again")
+        uid, problem = await asyncio.shield(task)
+        if uid is None:
+            return failed(problem)
         request.session.clear()
-        request.session["uid"] = user.id
+        request.session["uid"] = uid
         return to_frontend("/app")
 
     @app.post("/auth/logout")
@@ -1193,10 +1233,15 @@ def create_app(
 
 
 async def _scheduler(state: State, interval: float) -> None:
+    delay = interval
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(delay)
         try:
             await state.deals.tick()
+            delay = interval
+        except psycopg.OperationalError as e:  # database dropped or restarting: back off quietly, try again
+            delay = min(delay * 2, 60.0)
+            log.warning("scheduler: database unavailable (%s); next try in %.0fs", str(e).splitlines()[0] if str(e) else type(e).__name__, delay)
         except Exception:
             log.exception("scheduler tick failed")
 

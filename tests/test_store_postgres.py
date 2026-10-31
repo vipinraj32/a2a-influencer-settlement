@@ -132,3 +132,13 @@ async def test_negotiation_transcript_feedback_and_lessons(store):
     await store.save_lesson({**lesson, "status": "approved"})
     assert [x["id"] for x in await store.list_lessons(user, "advertiser", status="approved")] == [lesson["id"]]
     assert await store.list_lessons(user, "influencer") == [] and (await store.get_lesson(lesson["id"]))["status"] == "approved"
+
+
+async def test_concurrent_sign_ins_create_one_user(store):
+    import asyncio
+
+    email = f"{new_id('race')}@example.com"
+    now = datetime.now(UTC)
+    a, b = (User(id=new_id("USR"), email=email, name="Racer", role="advertiser", created_at=now) for _ in range(2))
+    first, second = await asyncio.gather(store.create_user(a), store.create_user(b))
+    assert first.id == second.id and (await store.get_user_by_email(email)).id == first.id

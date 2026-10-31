@@ -30,7 +30,9 @@ export function Layout() {
   const home = user.role === "advertiser" ? "/advertiser" : "/influencer";
 
   // close the mobile drawer whenever the page changes
-  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);

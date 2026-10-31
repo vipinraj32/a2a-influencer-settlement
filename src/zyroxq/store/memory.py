@@ -51,6 +51,12 @@ class MemoryStore:
     async def save_user(self, user: User) -> None:
         self._users[user.id] = user.model_copy(deep=True)
 
+    async def create_user(self, user: User) -> User:
+        existing = next((u for u in self._users.values() if u.email == user.email), None)
+        if existing is None:
+            self._users[user.id] = existing = user.model_copy(deep=True)
+        return existing.model_copy(deep=True)
+
     async def get_user(self, user_id: str) -> User | None:
         u = self._users.get(user_id)
         return u.model_copy(deep=True) if u else None

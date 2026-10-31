@@ -327,6 +327,27 @@ async def test_google_sign_in_connects_youtube_channel(server):
         assert f"Agent signer: {me['user']['agent_signer']}" in challenge and "Channel: UCnia" in challenge
 
 
+async def test_duplicate_google_callbacks_sign_in_once(server):
+    """The browser may deliver the callback twice at once; the second must not sign the user back out."""
+    app, _ = server
+    async with client_for(app) as browser:
+        res = await browser.get("/auth/google/login", params={"role": "advertiser"})
+        oauth_state = parse_qs(urlparse(res.headers["location"]).query)["state"][0]
+        with respx.mock(assert_all_called=True) as google:
+            # Google codes are single use: a second exchange would fail
+            replies = [httpx.Response(200, json={"access_token": "ya29.t"}), httpx.Response(400, json={"error": "invalid_grant"})]
+            token = google.post(TOKEN_URL).mock(side_effect=replies)
+            google.get(USERINFO_URL).respond(json={"email": "twice@example.com", "email_verified": True, "name": "Twice", "picture": ""})
+            first, second = await asyncio.gather(*(browser.get("/auth/google/callback", params={"code": "abc", "state": oauth_state}) for _ in range(2)))
+        assert token.call_count == 1
+        assert first.headers["location"] == second.headers["location"] == f"{BASE}/app"
+        for res in (first, second):  # whichever cookie the browser keeps, it is signed in
+            async with client_for(app) as other:
+                other.cookies.set("zyroxq_session", res.cookies["zyroxq_session"])
+                assert (await other.get("/api/me")).json()["user"]["email"] == "twice@example.com"
+        assert len([u for u in await app.state.zx.ctx.store.list_users() if u.email == "twice@example.com"]) == 1
+
+
 async def test_oauth_state_mismatch_is_refused(server):
     app, _ = server
     async with client_for(app) as browser:

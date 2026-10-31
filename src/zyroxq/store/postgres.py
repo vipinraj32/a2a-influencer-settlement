@@ -133,16 +133,36 @@ CREATE INDEX IF NOT EXISTS lessons_owner_idx ON agent_improvement_examples (owne
 """
 
 
+# Hosted PostgreSQL (Render and similar) drops idle connections without telling the client. The pool checks each
+# connection before lending it out, retires idle ones before the server's own cut-off, and keeps sockets alive, so a
+# dead connection is replaced instead of failing the next query.
+KEEPALIVE = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3, "connect_timeout": 10}
+
+
+async def open_pool(database_url: str, *, max_size: int = 10, **kwargs: Any) -> AsyncConnectionPool:
+    pool = AsyncConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=max_size,
+        open=False,
+        check=AsyncConnectionPool.check_connection,
+        max_idle=120,
+        max_lifetime=30 * 60,
+        reconnect_timeout=60,
+        kwargs={**KEEPALIVE, **kwargs},
+    )
+    await pool.open(wait=True, timeout=15)
+    return pool
+
+
 class PostgresStore:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 
     @classmethod
     async def connect(cls, database_url: str) -> PostgresStore:
-        pool = AsyncConnectionPool(database_url, min_size=1, max_size=10, open=False)
-        await pool.open(wait=True, timeout=10)
-        store = cls(pool)
-        async with pool.connection() as conn:
+        store = cls(await open_pool(database_url, max_size=10))
+        async with store.pool.connection() as conn:
             await conn.execute(SCHEMA)
         return store
 
@@ -212,6 +232,16 @@ class PostgresStore:
                 "ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, role = EXCLUDED.role, data = EXCLUDED.data",
                 (user.id, user.email, user.role, user.created_at, Jsonb(user.model_dump(mode="json"))),
             )
+
+    async def create_user(self, user: User) -> User:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, email, role, created_at, data) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
+                (user.id, user.email, user.role, user.created_at, Jsonb(user.model_dump(mode="json"))),
+            )
+            row = await (await conn.execute("SELECT data FROM users WHERE email = %s", (user.email,))).fetchone()
+        assert row is not None
+        return User.model_validate(row[0])
 
     async def get_user(self, user_id: str) -> User | None:
         async with self.pool.connection() as conn:

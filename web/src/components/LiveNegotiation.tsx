@@ -55,7 +55,9 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
   const s = summarize(events);
   const end = useRef<HTMLDivElement>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "nearest" }), [events.length]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" }); // newer browsers return a Promise here: never hand it to React as a cleanup
+  }, [events.length]);
 
   if (status === "legacy") return <A2AChat deal={deal} creator={creator} avatar={avatar} />; // ended before live transcripts existed
   if (status === "error") return <p className="error small">Could not open this conversation. Sign in again or reload the page.</p>;
