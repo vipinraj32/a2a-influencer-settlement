@@ -366,6 +366,25 @@ export function CampaignView() {
 
       {c.error && <Notice tone="bad">{c.error}</Notice>}
       {c.pending_approval && <SigningPanel campaign={c} names={names} onDone={reloadAll} />}
+      {!c.pending_approval && queue.progress && queue.progress.agreed_count > 0 && (working || queue.progress.workflow_status === "running") && (
+        // Payments are authorized once, for every agreed creator together, after the whole creator queue has finished
+        <Notice>
+          {queue.progress.workflow_status === "running" ? (
+            <>
+              <strong>
+                {queue.progress.agreed_count} creator{queue.progress.agreed_count > 1 ? "s" : ""} agreed so far.
+              </strong>{" "}
+              Nothing to sign yet: the payment authorization is prepared once, for all agreed creators together, after the remaining negotiations finish (
+              {queue.progress.completed_count} of {queue.progress.total_creators} done).
+            </>
+          ) : (
+            <>
+              <strong>All negotiations finished.</strong> Preparing the payment authorization for {queue.progress.agreed_count} agreed creator
+              {queue.progress.agreed_count > 1 ? "s" : ""}…
+            </>
+          )}
+        </Notice>
+      )}
 
       <div className="report-grid">
         <div className="report-main">

@@ -430,3 +430,28 @@ async def test_restart_with_postgres_resumes_in_a_new_process():
     assert s["ava"]["status"] == "FAILED" and s["ava"]["outcome"] == "interrupted"
     assert s["kai"]["status"] == "AGREED"
     assert q["progress"]["workflow_status"] == "completed"
+
+
+async def test_outcomes_are_pushed_live_and_payment_waits_for_the_whole_queue(server):
+    """A rejection or agreement reaches the advertiser's page the moment it happens; the signing step comes once,
+    for every agreed creator together, only after the last creator finished."""
+    app, _ = server
+    advertiser_id = await creators(app, "leo", "ava", "kai")  # leo is rejected first, then two agreements
+    seen = record(app)
+    cid = await start(app, advertiser_id)
+    q = await queue(app, advertiser_id, cid)
+    leo, ava, kai = (x["negotiation_id"] for x in q["sessions"])
+
+    def index(pred):
+        return next(i for i, e in enumerate(seen) if pred(e))
+
+    leo_rejected = index(lambda e: e["type"] == "deal" and e["deal_id"] == leo and e["state"] == "REJECTED")
+    ava_agreed = index(lambda e: e["type"] == "deal" and e["deal_id"] == ava and e["state"] == "AGREED")
+    kai_started = index(lambda e: e["type"] == "negotiation" and e["deal_id"] == kai and e["event"]["event_type"] == "negotiation_started")
+    kai_done = index(lambda e: e["type"] == "negotiation" and e["deal_id"] == kai and e["event"]["event_type"] == "negotiation_completed")
+    awaiting = index(lambda e: e["type"] == "campaign" and e["status"] == "awaiting_approval")
+    assert leo_rejected < ava_agreed < kai_started  # each outcome is pushed before the next creator even starts
+    assert awaiting > kai_done  # the payment step waits for the whole queue
+    assert sum(1 for e in seen if e["type"] == "campaign" and e["status"] == "awaiting_approval") == 1
+    detail = (await client_for(app, advertiser_id).get(f"/api/campaigns/{cid}")).json()
+    assert sorted(detail["pending_approval"]["deals"]) == sorted([ava, kai])  # one authorization step for both agreed deals

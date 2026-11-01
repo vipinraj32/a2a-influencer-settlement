@@ -97,31 +97,49 @@ export interface Resource<T> {
   reload: () => Promise<void>;
 }
 
-/** Fetches once per `key` and exposes `reload` for live updates. Keeps the last good data while reloading. */
+/** Fetches once per `key` and exposes `reload` for live updates. Keeps the last good data while reloading.
+ * Reloads never cancel each other: one request runs at a time, and reloads asked for meanwhile become one more request
+ * after it. (Dropping every response but the newest starved the page while agents talked: events kept arriving faster
+ * than the server answered, so nothing was ever shown until the conversation ended.) */
 export function useResource<T>(load: () => Promise<T>, key: string): Resource<T> {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const loadRef = useRef(load);
   loadRef.current = load;
-  const seq = useRef(0);
+  const generation = useRef(0); // bumped when `key` changes: a response for the old key is never shown
+  const inflight = useRef<Promise<void> | null>(null);
+  const again = useRef(false);
 
-  const reload = useCallback(async () => {
-    const mine = ++seq.current;
-    try {
-      const value = await loadRef.current();
-      if (mine === seq.current) {
-        setData(value);
-        setError(null);
-      }
-    } catch (e) {
-      if (mine === seq.current) setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (mine === seq.current) setLoading(false);
+  const reload = useCallback((): Promise<void> => {
+    if (inflight.current) {
+      again.current = true;
+      return inflight.current;
     }
+    const run = async () => {
+      do {
+        again.current = false;
+        const gen = generation.current;
+        try {
+          const value = await loadRef.current();
+          if (gen === generation.current) {
+            setData(value);
+            setError(null);
+          }
+        } catch (e) {
+          if (gen === generation.current) setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          if (gen === generation.current) setLoading(false);
+        }
+      } while (again.current);
+      inflight.current = null;
+    };
+    inflight.current = run();
+    return inflight.current;
   }, []);
 
   useEffect(() => {
+    generation.current += 1;
     setLoading(true);
     setData(undefined);
     void reload();
