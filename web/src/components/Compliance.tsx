@@ -3,7 +3,9 @@ import { api } from "../api";
 import { CreatorLink } from "./CreatorLink";
 import { humanize, when } from "../format";
 import { useLiveEvents, useResource } from "../live";
-import { ActionButton, Card, Empty, Notice, StateBadge } from "./ui";
+import { ActionButton, Card, Empty, StateBadge } from "./ui";
+
+const COUNTRY: Record<string, string> = { IN: "India", US: "United States", GB: "United Kingdom", EU: "European Union" };
 
 /** Campaign Compliance & Audit: disclosure policy versions in force and every deal's gates. */
 export function ComplianceCard({ campaignId, names }: { campaignId: string; names: Map<string, string> }) {
@@ -12,29 +14,35 @@ export function ComplianceCard({ campaignId, names }: { campaignId: string; name
   const v = view.data;
   if (!v) return null;
   return (
-    <Card title="Compliance and audit">
-      {v.settlement_simulated && <Notice tone="warn">Simulated settlement: escrow funding and payouts on this server are in-process ledger entries. No USDC moves.</Notice>}
-      <div className="policies">
+    <Card title="Compliance" actions={v.settlement_simulated ? <span className="chip warn" title="Escrow funding and payouts on this server are in-process ledger entries. No USDC moves.">Simulated</span> : undefined}>
+      <ul className="compliance-summary">
+        <li>
+          <span>Posts must show</span>
+          <strong>{v.required_tags.join(" ")}</strong>
+        </li>
+        <li>
+          <span>Disclosure rules</span>
+          <strong>{v.policies.map((p) => COUNTRY[p.id.split("@")[0]] ?? p.id.split("@")[0]).join(", ") || "none"}</strong>
+        </li>
+        <li>
+          <span>Your review</span>
+          <strong>{v.review_required ? "Required before the fixed fee" : "Not required"}</strong>
+        </li>
+      </ul>
+      <details className="policies">
+        <summary>Rule details</summary>
         {v.policies.map((p) => (
-          <details key={p.id}>
-            <summary>
-              <strong>{p.id}</strong> · labels {p.approved_labels.join(", ")} · first {p.placement_chars} chars
-              {p.in_video_required ? " · in-video attestation" : ""}
-            </summary>
-            <ul className="bullets small">
-              {p.sources.map((s) => (
-                <li key={s}>{s}</li>
-              ))}
-              {p.notes && <li>{p.notes}</li>}
-              {p.livestream_rule && <li>Livestreams: {p.livestream_rule}</li>}
-              {p.discouraged_labels.length > 0 && <li>Never counts: {p.discouraged_labels.join(", ")}</li>}
-            </ul>
-          </details>
+          <div key={p.id} className="small">
+            <strong>
+              {COUNTRY[p.id.split("@")[0]] ?? p.id} <span className="muted">({p.id})</span>
+            </strong>
+            : accepted labels {p.approved_labels.join(", ")}; within the first {p.placement_chars} characters
+            {p.in_video_required ? "; also said in the video" : ""}.
+            {p.discouraged_labels.length > 0 && <span className="muted"> Never counts: {p.discouraged_labels.join(", ")}.</span>}
+          </div>
         ))}
-      </div>
-      <p className="small muted">
-        Required tags {v.required_tags.join(" ")} · {v.review_required ? "your review gates the fixed fee" : "no manual review"}. {v.disclaimer}
-      </p>
+        <p className="small muted">{v.disclaimer}</p>
+      </details>
       {v.deals.length === 0 ? (
         <Empty>No agreed deals yet.</Empty>
       ) : (

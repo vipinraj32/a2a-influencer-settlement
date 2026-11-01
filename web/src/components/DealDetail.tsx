@@ -17,7 +17,8 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
   const role = me.role;
   const { status } = useSession();
   const explorer = status?.escrow.simulated ? undefined : status?.chain.explorer_url;
-  const events = useResource(() => api.dealEvents(deal.id), deal.id);
+  // the advertiser reads this history in the campaign's Audit trail tab: no second copy here
+  const events = useResource(() => (role === "advertiser" ? Promise.resolve([]) : api.dealEvents(deal.id)), `${deal.id}:${role}`);
   useLiveEvents((e) => e.deal_id === deal.id, events.reload);
   const t = deal.terms;
   const paid = deal.payouts.filter((p) => p.kind !== "refund").reduce((s, p) => s + Number(p.amount), 0);
@@ -186,8 +187,13 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
         </>
       )}
 
-      <h3>Timeline</h3>
-      {events.data ? <Timeline events={events.data} /> : <Empty>Loading…</Empty>}
+      {role !== "advertiser" && (
+        // advertisers read the same history in the campaign's Audit trail tab, next to the conversation
+        <details className="deal-timeline">
+          <summary>Activity log{events.data ? ` (${events.data.length})` : ""}</summary>
+          {events.data ? <Timeline events={events.data} /> : <Empty>Loading…</Empty>}
+        </details>
+      )}
     </Card>
   );
 }

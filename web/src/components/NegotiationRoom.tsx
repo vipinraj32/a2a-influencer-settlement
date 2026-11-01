@@ -4,7 +4,14 @@ import { useLiveEvents, useResource } from "../live";
 import type { Deal } from "../types";
 import { Empty } from "./ui";
 
-const signed = (v: string) => (Number(v) > 0 ? `+${usd(v)}` : Number(v) < 0 ? `−${usd(String(-Number(v)))}` : "±0");
+// "creator declined: Declined: no agreement…" → "No agreement within the round limit."
+function plainOutcome(outcome: string): string {
+  const text = outcome.replace(/^[a-z' ]+:\s*/i, "").replace(/^(declined|accepted|counter-offer):\s*/i, "");
+  return text ? text[0].toUpperCase() + text.slice(1) : outcome;
+}
+
+// The creator agent's note only when it says more than the terms already shown
+const restatesTerms = (text: string) => /^(counter-offer|offer|accepted)[.:]/i.test(text.trim()) && /\$\d/.test(text);
 
 /** Structured offers, what moved each round, the payable breakdown and this party's own decision records. */
 export function NegotiationRoom({ deal }: { deal: Deal }) {
@@ -34,10 +41,10 @@ export function NegotiationRoom({ deal }: { deal: Deal }) {
           {humanize(s.usage_rights)}
           {s.license_days ? ` · license ${s.license_days}d` : ""}
           {s.paid_amplification ? " · paid amplification" : ""}
-          {s.exclusivity_days ? ` · exclusivity ${s.exclusivity_days}d ${s.exclusivity_category}` : ""} · {s.revisions} revision(s)
+          {s.exclusivity_days ? ` · exclusivity ${s.exclusivity_days}d ${s.exclusivity_category}` : ""} · {s.revisions} revision{s.revisions === 1 ? "" : "s"}
         </span>
       </div>
-      {v.outcome && <p className="small">Outcome: {v.outcome}</p>}
+      {v.outcome && <p className="nr-outcome">{plainOutcome(v.outcome)}</p>}
 
       {v.rounds.length === 0 ? (
         <Empty>No offers yet.</Empty>
@@ -46,32 +53,27 @@ export function NegotiationRoom({ deal }: { deal: Deal }) {
           <thead>
             <tr>
               <th>Round</th>
-              <th>Advertiser offer</th>
-              <th>Creator agent</th>
-              <th>Explanation</th>
+              <th>Your offer</th>
+              <th>Creator's answer</th>
             </tr>
           </thead>
           <tbody>
             {v.rounds.map((r) => (
               <tr key={r.round}>
                 <td>{r.round}</td>
-                <td>
-                  {r.advertiser_offer && termsText(r.advertiser_offer, model)}
-                  {r.advertiser_moved && <div className="small muted">fixed {signed(r.advertiser_moved.fixed_fee)} · CPM {signed(r.advertiser_moved.cpm)}</div>}
-                </td>
+                <td>{r.advertiser_offer && termsText(r.advertiser_offer, model)}</td>
                 <td>
                   <strong className={`reply-${r.reply}`}>{humanize(r.reply)}</strong>
-                  {r.counter && <div>→ {termsText(r.counter, model)}</div>}
-                  {r.creator_moved && <div className="small muted">fixed {signed(r.creator_moved.fixed_fee)} · CPM {signed(r.creator_moved.cpm)}</div>}
+                  {r.counter && <> · {termsText(r.counter, model)}</>}
+                  {r.explanation && !restatesTerms(r.explanation) && !r.counter && <div className="small muted">{plainOutcome(r.explanation)}</div>}
                 </td>
-                <td className="small">{r.explanation}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
 
-      {v.payable && (
+      {v.payable && (v.status === "agreed" || v.status === "open") && (
         <>
           <h4>What it pays</h4>
           <table className="table compact">
@@ -97,41 +99,31 @@ export function NegotiationRoom({ deal }: { deal: Deal }) {
               ))}
             </tbody>
           </table>
-          <p className="small muted">
-            {v.payable.views_to_cap ? `The cap is reached at ${num(v.payable.views_to_cap)} views. ` : ""}Eligible views are YouTube's count when the
-            performance fee is due, for a post that is still public and still passes its checks. Rules {v.payable.examples[0]?.version}.
+          <p className="small muted" title="Eligible views are YouTube's count when the performance fee is due, for a post that is still public and still passes its checks.">
+            {v.payable.views_to_cap ? `Reaches the cap at ${num(v.payable.views_to_cap)} views.` : "Views counted when the performance fee is due."}
           </p>
         </>
       )}
 
       {decisions.data && decisions.data.length > 0 && (
-        <>
-          <h4>Your agent's decisions (private to you)</h4>
+        <details className="nr-decisions">
+          <summary>Why your agent decided this · only you see this</summary>
           <ol className="decisions">
             {decisions.data.map((d) => {
               const failed = d.hard_checks.filter((c) => !c.passed);
               return (
                 <li key={d.id}>
                   <div>
-                    <strong>Round {d.round}</strong> · <span className="chip">{humanize(d.action)}</span> by {d.decided_by}
-                    {d.score !== null && <> · score {d.score.toFixed(2)}</>} · goal {humanize(d.objective)} · policy v{d.policy_version}
+                    <strong>Round {d.round}</strong> · {humanize(d.action)}
+                    <span className="muted small"> · {when(d.at)}</span>
                   </div>
-                  <div className="small">{d.private_rationale}</div>
-                  {failed.length > 0 && (
-                    <div className="small error">
-                      Failed: {failed.map((c) => `${humanize(c.name)} (${c.detail})`).join("; ")}
-                    </div>
-                  )}
-                  {d.preferences_applied.length > 0 && <div className="small muted">Applied: {d.preferences_applied.join("; ")}</div>}
+                  {failed.length > 0 && <div className="small muted">Their ask broke your limits: {failed.map((c) => c.detail).join("; ")}</div>}
                   {d.llm_overridden.length > 0 && <div className="small muted">AI suggestion overridden: {d.llm_overridden.join("; ")}</div>}
-                  <div className="small muted">
-                    The other side saw: “{d.public_explanation}” · {when(d.at)}
-                  </div>
                 </li>
               );
             })}
           </ol>
-        </>
+        </details>
       )}
 
       {v.agreement && (

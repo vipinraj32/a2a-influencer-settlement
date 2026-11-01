@@ -13,15 +13,6 @@
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border);
 }
-.report-back {
-  padding-top: 0.35rem;
-  color: var(--text);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.report-back:hover {
-  color: var(--accent);
-}
 .report-title {
   flex: 1;
   min-width: 0;
@@ -449,4 +440,20 @@
   .live-chip .live-dot.on {
     animation: none;
   }
+}
+
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.report-meta li {
+  padding: 0.1rem 0.55rem;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-xs);
 }

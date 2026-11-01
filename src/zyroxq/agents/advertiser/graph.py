@@ -200,7 +200,7 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
                 if move.record is not None:
                     await deals.record_decision(move.record)
                 await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_move", action=move.action, reason=move.reason,
-                                  decided_by=move.decided_by, policy_override=move.policy_override)  # fmt: skip
+                                  decided_by=move.decided_by, policy_override=move.policy_override, round=offer.round + 1)  # fmt: skip
                 outcome = move.record.public_explanation if move.record else move.reason
                 if move.action == "escalate":
                     return await conclude("escalated", "negotiation_rejected", "Paused: the advertiser needs to review this one.",

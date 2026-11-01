@@ -5,6 +5,7 @@ import { Spinner } from "./components/ui";
 import { Account } from "./pages/Account";
 import { AdvertiserHome } from "./pages/advertiser/AdvertiserHome";
 import { AgentProfile } from "./pages/advertiser/AgentProfile";
+import { Campaigns } from "./pages/advertiser/Campaigns";
 import { CampaignView } from "./pages/advertiser/CampaignView";
 import { Creators } from "./pages/advertiser/Creators";
 import { CreatorProfile } from "./pages/CreatorProfile";
@@ -62,6 +63,7 @@ const router = createBrowserRouter([
       { path: "/advertiser/creators", element: <Creators /> },
       { path: "/advertiser/creators/:id", element: <CreatorProfile /> },
       { path: "/advertiser/agent", element: <AgentProfile /> },
+      { path: "/advertiser/campaigns", element: <Campaigns /> },
       { path: "/advertiser/campaigns/:id", element: <CampaignView /> },
     ],
   },

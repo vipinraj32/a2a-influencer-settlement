@@ -29,17 +29,20 @@ const REPLY_LABEL: Record<string, string> = {
   escalate: "Escalated",
 };
 
-const time = (iso: string) =>
-  new Date(iso).toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+const time = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 
 function offerLabel(m: NegotiationEvent): string {
   if (m.reply) return REPLY_LABEL[m.reply] ?? m.reply;
+  if (/^accept/i.test(m.content)) return "Accepts";
   return m.round === 1 ? "Opening offer" : "Counteroffer";
 }
+
+// Template notes ("Offer.", "Counter-offer: $2.00 fixed + …") only repeat the offer line under them
+const sayMore = (m: NegotiationEvent) => {
+  const text = m.content.trim();
+  if (!m.offer) return text !== "";
+  return !/^(offer|counter-offer|accepted)\.?$/i.test(text) && !(/^(counter-offer|offer)[.:]/i.test(text) && /\$\d/.test(text));
+};
 
 export interface LiveNegotiationProps {
   deal: Deal;
@@ -50,13 +53,15 @@ export interface LiveNegotiationProps {
   /** Advertiser view only: the campaign's own limits, never sent to the creator's browser. */
   limits?: { budget: string; max_fixed: string; max_cpm: string; cap: string };
   deliverable?: string;
+  /** Advertiser view only: your agent's reason for its message in each round (round → text). Never shown to the creator. */
+  notes?: Record<number, string>;
   /** Stacked with the campaign's other conversations: a creator header instead of the agent cards, no feedback form. */
   compact?: boolean;
   onOpen?: () => void;
 }
 
 /** The A2A conversation of one deal, live: each agent message appears as soon as the agent produced it. */
-export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, deliverable, compact, onOpen }: LiveNegotiationProps) {
+export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, deliverable, notes, compact, onOpen }: LiveNegotiationProps) {
   const { events, status } = useNegotiationStream(deal.id, deal.state);
   const s = summarize(events);
   const end = useRef<HTMLDivElement>(null);
@@ -168,7 +173,13 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
       <div className="ln-log" aria-live="polite">
         {s.messages.length === 0 && !s.thinking && <Empty>No messages yet.</Empty>}
         {s.messages.map((m) => (
-          <Message key={m.event_id} m={m} model={model} avatar={m.agent_role === "influencer" ? avatar : undefined} />
+          <Message
+            key={m.event_id}
+            m={m}
+            model={model}
+            avatar={m.agent_role === "influencer" ? avatar : undefined}
+            note={viewer === "advertiser" && m.agent_role === "advertiser" && m.round ? notes?.[m.round] : undefined}
+          />
         ))}
         {s.thinking && (
           <div className={`ln-msg ln-${s.thinking.agent_role}`}>
@@ -239,22 +250,27 @@ function AgentCard(p: {
   );
 }
 
-function Message({ m, model, avatar }: { m: NegotiationEvent; model: CompensationModel; avatar?: string }) {
+function Message({ m, model, avatar, note }: { m: NegotiationEvent; model: CompensationModel; avatar?: string; note?: string }) {
   const side = m.agent_role === "advertiser" ? "ln-advertiser" : "ln-influencer";
   return (
     <div className={`ln-msg ${side}`}>
       {m.agent_role === "influencer" && <Avatar src={avatar} name={m.agent_name} size={26} />}
       <div className={`ln-bubble ${m.reply ? `reply-${m.reply}` : ""}`}>
-        <small>
-          {m.agent_name} · {m.agent_role === "advertiser" ? "Advertiser" : "Influencer"} · {time(m.timestamp)}
+        <small title={m.agent_role === "advertiser" ? "Advertiser agent" : "Creator agent"}>
+          {m.agent_name} · {time(m.timestamp)}
         </small>
-        {m.content && <span>{m.content}</span>}
+        {sayMore(m) && <span>{m.content}</span>}
         {m.offer && (
           <span className="ln-offer">
             <b>{offerLabel(m)}</b> {termsText(m.offer, model)}
           </span>
         )}
         {!m.offer && m.reply && <b className="ln-reply">{REPLY_LABEL[m.reply] ?? m.reply}</b>}
+        {note && (
+          <span className="ln-note" title="Your agent's reasoning. The creator never sees this.">
+            <b>Why</b> {note}
+          </span>
+        )}
       </div>
     </div>
   );

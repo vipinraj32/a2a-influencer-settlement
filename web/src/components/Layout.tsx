@@ -9,6 +9,7 @@ import { Address, Avatar } from "./ui";
 const NAV = {
   advertiser: [
     { to: "/advertiser", label: "Dashboard", icon: "home", end: true },
+    { to: "/advertiser/campaigns", label: "Campaigns", icon: "ledger" },
     { to: "/advertiser/new", label: "New campaign", icon: "plus" },
     { to: "/advertiser/creators", label: "Creators", icon: "users" },
     { to: "/advertiser/agent", label: "My agent", icon: "bot" },

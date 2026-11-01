@@ -26,7 +26,7 @@ const PIPELINE: { label: string; states: DealState[]; tone: string }[] = [
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const paidOut = (d: Deal, kinds: string[]) => sum(d.payouts.filter((p) => kinds.includes(p.kind)).map((p) => Number(p.amount)));
 
-async function loadDeals(): Promise<Deal[]> {
+export async function loadDeals(): Promise<Deal[]> {
   const campaigns = await api.campaigns();
   const lists = await Promise.all(campaigns.map((c) => api.campaignDeals(c.spec.id)));
   return lists.flat();
@@ -104,8 +104,8 @@ export function AdvertiserHome() {
         <section className="panel dash-campaigns">
           <header className="panel-head">
             <h2>Campaigns</h2>
-            <Link to="/advertiser/new" className="panel-link">
-              New <Icon name="arrow" size={16} />
+            <Link to="/advertiser/campaigns" className="panel-link">
+              View all <Icon name="arrow" size={16} />
             </Link>
           </header>
           {loading ? (
@@ -251,9 +251,7 @@ const FILTERS: { key: string; label: string; match: (c: Campaign) => boolean }[]
   { key: "done", label: "Done", match: (c) => c.status === "done" },
   { key: "failed", label: "Failed", match: (c) => c.status === "failed" },
 ];
-const PAGE_SIZE = 5;
-
-function CampaignList({ campaigns, byCampaign }: { campaigns: Campaign[]; byCampaign: Map<string, Deal[]> }) {
+export function CampaignList({ campaigns, byCampaign, pageSize = 5 }: { campaigns: Campaign[]; byCampaign: Map<string, Deal[]>; pageSize?: number }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -262,9 +260,9 @@ function CampaignList({ campaigns, byCampaign }: { campaigns: Campaign[]; byCamp
   const shown = campaigns
     .filter(current.match)
     .filter((c) => !q || [c.spec.advertiser, c.spec.niche, c.spec.deliverable, c.status].some((v) => v?.toLowerCase().includes(q)));
-  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const pages = Math.max(1, Math.ceil(shown.length / pageSize));
   const at = Math.min(page, pages - 1);
-  const slice = shown.slice(at * PAGE_SIZE, at * PAGE_SIZE + PAGE_SIZE);
+  const slice = shown.slice(at * pageSize, at * pageSize + pageSize);
   const pick = (key: string) => {
     setFilter(key);
     setPage(0);
@@ -318,7 +316,7 @@ function CampaignList({ campaigns, byCampaign }: { campaigns: Campaign[]; byCamp
 
       <nav className="pager" aria-label="Campaign pages">
         <span className="muted small">
-          {shown.length === 0 ? "0" : `${at * PAGE_SIZE + 1}–${at * PAGE_SIZE + slice.length}`} of {shown.length}
+          {shown.length === 0 ? "0" : `${at * pageSize + 1}–${at * pageSize + slice.length}`} of {shown.length}
         </span>
         <div className="pager-btns">
           <button type="button" onClick={() => setPage(at - 1)} disabled={at === 0} aria-label="Previous page">
