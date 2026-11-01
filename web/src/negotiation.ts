@@ -1,55 +1,70 @@
-// Live negotiation transcript for one deal. The server replays stored events, then pushes new ones the moment an
-// agent produces them; each frame has an `id`, so EventSource resumes with Last-Event-ID after a drop and we
-// ignore anything at or below the last event_id we kept. Reading the stream never starts or re-runs a negotiation.
+// Live negotiation transcript for one deal. The stored events load over REST, then new ones arrive on the app's
+// shared live stream (/api/stream) the moment an agent produces them. Every event carries a per-deal event_id: we
+// keep only the next id in sequence, and a gap (dropped event, reconnect) fetches what is missing from the store.
+// One shared connection serves any number of open conversations, and reading never starts or re-runs a negotiation.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { NegotiationEvent } from "./types";
+import { subscribeLive } from "./live";
+import type { DealState, NegotiationEvent } from "./types";
 
-export type StreamStatus = "connecting" | "live" | "reconnecting" | "done" | "legacy" | "error";
+export type StreamStatus = "connecting" | "live" | "done" | "legacy" | "error";
 
-export function useNegotiationStream(dealId: string): {
-  events: NegotiationEvent[];
-  status: StreamStatus;
-} {
+export function useNegotiationStream(dealId: string, dealState: DealState): { events: NegotiationEvent[]; status: StreamStatus } {
   const [events, setEvents] = useState<NegotiationEvent[]>([]);
   const [status, setStatus] = useState<StreamStatus>("connecting");
+  // read when the first load comes back empty; the deal finishing must not reset an open conversation
+  const negotiating = useRef(dealState === "NEGOTIATING");
+  negotiating.current = dealState === "NEGOTIATING";
 
   useEffect(() => {
     setEvents([]);
     setStatus("connecting");
     let last = 0;
-    let closed = false;
-    const source = new EventSource(api.negotiationStreamUrl(dealId), {
-      withCredentials: true,
-    });
-    const close = (s: StreamStatus) => {
-      closed = true;
-      source.close();
-      setStatus(s);
-    };
-    source.onopen = () => !closed && setStatus("live");
-    source.onerror = () => {
-      if (closed) return;
-      // CLOSED means the server refused (signed out, not your deal): EventSource will not retry on its own
-      setStatus(source.readyState === EventSource.CLOSED ? "error" : "reconnecting");
-    };
-    source.onmessage = (msg) => {
-      let e: NegotiationEvent;
-      try {
-        e = JSON.parse(msg.data) as NegotiationEvent;
-      } catch {
-        return;
+    let stopped = false;
+    let fetching: Promise<void> | null = null;
+
+    const apply = (batch: NegotiationEvent[]) => {
+      const fresh = batch.filter((e) => e.event_id > last).sort((a, b) => a.event_id - b.event_id);
+      const next: NegotiationEvent[] = [];
+      for (const e of fresh) {
+        if (e.event_id !== last + 1) break; // keep the sequence whole; the next fetch fills the gap
+        next.push(e);
+        last = e.event_id;
       }
-      if (e.event_type === "negotiation_legacy") return close("legacy");
-      if (e.event_id <= last) return; // already shown before the reconnect
-      last = e.event_id;
-      setEvents((prev) => [...prev, e]);
-      if (e.event_type === "negotiation_completed") close("done");
+      if (!next.length) return;
+      setEvents((prev) => [...prev, ...next]);
+      setStatus(next.some((e) => e.event_type === "negotiation_completed") ? "done" : (s) => (s === "done" ? s : "live"));
     };
+    const catchUp = () => {
+      fetching ??= api
+        .negotiationEvents(dealId, last)
+        .then((batch) => {
+          if (stopped) return;
+          apply(batch);
+          if (last === 0) setStatus((s) => (s === "connecting" ? (negotiating.current ? "live" : "legacy") : s));
+        })
+        .catch(() => {
+          if (!stopped && last === 0) setStatus("error");
+        })
+        .finally(() => {
+          fetching = null;
+        });
+      return fetching;
+    };
+
+    const unsubscribe = subscribeLive(
+      (live) => {
+        if (stopped || live.type !== "negotiation" || live.deal_id !== dealId || !live.event) return;
+        if (live.event.event_id === last + 1) apply([live.event]);
+        else if (live.event.event_id > last + 1) void catchUp();
+      },
+      () => void catchUp(), // the shared stream reconnected: fetch whatever was said meanwhile
+    );
+    void catchUp();
     return () => {
-      closed = true;
-      source.close();
+      stopped = true;
+      unsubscribe();
     };
   }, [dealId]);
 

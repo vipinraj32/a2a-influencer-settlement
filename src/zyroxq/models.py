@@ -504,6 +504,7 @@ class Campaign(BaseModel):
     status: Literal["planning", "negotiating", "awaiting_approval", "funding", "active", "done", "failed"] = "planning"
     created_at: datetime
     error: str = ""
+    negotiation_cancelled: bool = False  # the advertiser stopped the creator queue: no further negotiations start
 
 
 class AuditEvent(BaseModel):

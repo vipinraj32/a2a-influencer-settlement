@@ -53,3 +53,24 @@ async def test_run_is_retried_only_before_it_started(server, monkeypatch):
 
 async def _noop():
     return None
+
+
+async def test_startup_retries_an_unreachable_database_then_fails_clearly(monkeypatch):
+    from zyroxq.store import postgres
+
+    waits: list[float] = []
+
+    async def no_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(postgres, "OPEN_ATTEMPTS", 2)
+    monkeypatch.setattr(postgres, "OPEN_TIMEOUT", 0.5)
+    monkeypatch.setattr(postgres.asyncio, "sleep", no_sleep)
+    url = "postgresql://zyroxq:s3cret-password@127.0.0.1:1/zyroxq?connect_timeout=1"  # nothing listens on port 1
+    try:
+        await postgres.open_pool(url)
+    except postgres.DatabaseUnavailable as e:
+        assert "s3cret-password" not in str(e) and "DATABASE_URL" in str(e)
+    else:
+        raise AssertionError("expected DatabaseUnavailable")
+    assert waits == [2]  # one backoff between the two attempts

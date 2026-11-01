@@ -21,6 +21,7 @@ class MemoryStore:
         self._feedback: dict[tuple[str, str], dict[str, Any]] = {}  # (deal, party) → record
         self._performance: dict[str, dict[str, Any]] = {}
         self._lessons: dict[str, dict[str, Any]] = {}
+        self._sessions: dict[str, dict[str, Any]] = {}
 
     async def save_campaign(self, campaign: Campaign) -> None:
         self._campaigns[campaign.spec.id] = campaign.model_copy(deep=True)
@@ -128,6 +129,23 @@ class MemoryStore:
 
     async def list_negotiation_rounds(self, deal_id: str) -> list[dict[str, Any]]:
         return sorted((dict(r) for (d, _), r in self._rounds.items() if d == deal_id), key=lambda r: r["round"])
+
+    async def queue_negotiations(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for row in rows:
+            taken = {(s["campaign_id"], s["creator_id"]) for s in self._sessions.values()}
+            if (row["campaign_id"], row["creator_id"]) not in taken:
+                self._sessions[row["negotiation_id"]] = dict(row)
+        return await self.list_negotiation_sessions(rows[0]["campaign_id"]) if rows else []
+
+    async def save_negotiation_session(self, row: dict[str, Any], expect: str | None = None) -> bool:
+        current = self._sessions.get(row["negotiation_id"])
+        if expect is not None and (current is None or current["status"] != expect):
+            return False
+        self._sessions[row["negotiation_id"]] = dict(row)
+        return True
+
+    async def list_negotiation_sessions(self, campaign_id: str) -> list[dict[str, Any]]:
+        return sorted((dict(s) for s in self._sessions.values() if s["campaign_id"] == campaign_id), key=lambda s: s["position"])
 
     async def save_feedback(self, record: dict[str, Any]) -> None:
         self._feedback[(record["deal_id"], record["party"])] = dict(record)

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../../api";
 import { ContentChecksEditor } from "../../components/ContentChecks";
@@ -159,6 +159,7 @@ export function NewCampaign() {
     set("requirements", text);
   }
 
+  const submitted = useRef<{ body: string; key: string } | null>(null);
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (lengthInvalid) {
@@ -175,7 +176,10 @@ export function NewCampaign() {
         max_cpm: model === "fixed" ? "0.00" : money(form.max_cpm),
         cap_per_creator: money(form.cap_per_creator),
       };
-      const created = await api.createCampaign(body);
+      // the same form submitted again (double-click, retry after a dropped response) reuses its key: one campaign only
+      const sent = JSON.stringify(body);
+      if (submitted.current?.body !== sent) submitted.current = { body: sent, key: newKey() };
+      const created = await api.createCampaign(body, submitted.current.key);
       navigate(`/advertiser/campaigns/${created.spec.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -449,3 +453,6 @@ export function NewCampaign() {
     </div>
   );
 }
+
+// randomUUID needs a secure context (https or localhost); a LAN address over plain http falls back
+const newKey = () => (typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);

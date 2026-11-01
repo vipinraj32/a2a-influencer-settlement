@@ -1,4 +1,4 @@
-import type { AgentLesson, AgentPerformance, FeedbackInput, NegotiationEvent, NegotiationFeedback, AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, ContentCheck, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
+import type { AgentLesson, AgentPerformance, FeedbackInput, NegotiationEvent, NegotiationFeedback, NegotiationProgress, NegotiationSession, AgentPolicy, AuditEvent, Campaign, CampaignDetail, CampaignInput, ComplianceView, ContentCheck, CreatorProfileView, Deal, DecisionRecord, DirectoryEntry, DisclosurePolicy, EvidenceItem, InfluencerDeal, Me, NegotiationView, NicheAnalysis, PlatformStatus, PolicyResponse, WalletBalance } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -20,11 +20,11 @@ function detail(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(path, {
     method,
     credentials: "same-origin",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: body === undefined ? headers : { "Content-Type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -65,7 +65,10 @@ export const api = {
   campaign: (id: string) => get<CampaignDetail>(`/api/campaigns/${encodeURIComponent(id)}`),
   campaignDeals: (id: string) => get<Deal[]>(`/api/campaigns/${encodeURIComponent(id)}/deals`),
   campaignEvents: (id: string) => get<AuditEvent[]>(`/api/campaigns/${encodeURIComponent(id)}/events`),
-  createCampaign: (body: CampaignInput) => post<Campaign>("/api/campaigns", body),
+  /** The same idempotency key for a retried or double-clicked submit returns the campaign the first request started. */
+  createCampaign: (body: CampaignInput, idempotencyKey: string) => request<Campaign>("POST", "/api/campaigns", body, { "Idempotency-Key": idempotencyKey }),
+  campaignNegotiations: (id: string) => get<{ progress: NegotiationProgress; sessions: NegotiationSession[] }>(`/api/campaigns/${encodeURIComponent(id)}/negotiations`),
+  cancelCampaignNegotiations: (id: string) => post<NegotiationProgress>(`/api/campaigns/${encodeURIComponent(id)}/negotiations/cancel`),
   parseBrief: (brief: string) => post<CampaignInput>("/api/campaigns/parse-brief", { brief }),
   decide: (id: string, approved: boolean, signatures: Record<string, string> = {}) =>
     post<{ status: string }>(`/api/campaigns/${encodeURIComponent(id)}/decision`, { approved, signatures }),

@@ -12,8 +12,24 @@ let connected = false;
 const connectionListeners = new Set<(up: boolean) => void>();
 
 function setConnected(up: boolean) {
+  const reconnected = up && !connected;
   connected = up;
   connectionListeners.forEach((l) => l(up));
+  if (reconnected) reconnectListeners.forEach((l) => l());
+}
+
+const reconnectListeners = new Set<() => void>();
+
+/** Every live event, unfiltered and undebounced, plus a callback whenever the stream (re)connects so the caller can
+ * fetch what it missed while it was down. Returns the unsubscribe function. */
+export function subscribeLive(listener: Listener, onReconnect?: () => void): () => void {
+  ensureStream();
+  listeners.add(listener);
+  if (onReconnect) reconnectListeners.add(onReconnect);
+  return () => {
+    listeners.delete(listener);
+    if (onReconnect) reconnectListeners.delete(onReconnect);
+  };
 }
 
 function ensureStream() {
@@ -37,7 +53,8 @@ export function closeStream() {
   setConnected(false);
 }
 
-/** Calls `handler` for every live event that passes `filter`, debounced so bursts trigger one reload. */
+/** Calls `handler` for live events that pass `filter`, at most once per `delayMs`: a burst triggers a reload shortly
+ * after its first event and again after the next, never waits for the burst to end (agents can talk for minutes). */
 export function useLiveEvents(filter: (e: LiveEvent) => boolean, handler: () => void, delayMs = 250) {
   const filterRef = useRef(filter);
   const handlerRef = useRef(handler);
@@ -47,9 +64,11 @@ export function useLiveEvents(filter: (e: LiveEvent) => boolean, handler: () => 
     ensureStream();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const listener: Listener = (e) => {
-      if (!filterRef.current(e)) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => handlerRef.current(), delayMs);
+      if (!filterRef.current(e) || timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        handlerRef.current();
+      }, delayMs);
     };
     listeners.add(listener);
     return () => {

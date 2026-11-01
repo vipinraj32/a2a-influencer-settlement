@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     authorization_ttl_seconds: int = 3600
     authorization_min_remaining_seconds: int = 120
     hsp_submit_timeout_seconds: float = 30
+    # Negotiation: how long one agent reply (the creator agent over A2A, or the advertiser agent's next move) may take
+    # before that creator's negotiation ends as TIMED_OUT and the campaign moves on to the next creator
+    negotiation_reply_timeout_seconds: float = 90
 
     # Verifier
     youtube_api_key: str = ""  # required to verify video proofs

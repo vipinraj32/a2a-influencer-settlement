@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { DELIVERABLE_LABEL, MODEL_LABEL, termsText, usd } from "../format";
 import { summarize, useNegotiationStream } from "../negotiation";
@@ -13,6 +13,9 @@ const OUTCOME_LABEL: Record<string, string> = {
   agreed: "Agreed",
   rejected: "No deal",
   timeout: "Round limit reached",
+  no_reply: "No reply in time",
+  walked_away: "No deal",
+  screened_out: "Not contacted",
   escalated: "Needs a human",
   cancelled: "Cancelled",
   error: "Error",
@@ -47,21 +50,48 @@ export interface LiveNegotiationProps {
   /** Advertiser view only: the campaign's own limits, never sent to the creator's browser. */
   limits?: { budget: string; max_fixed: string; max_cpm: string; cap: string };
   deliverable?: string;
+  /** Stacked with the campaign's other conversations: a creator header instead of the agent cards, no feedback form. */
+  compact?: boolean;
+  onOpen?: () => void;
 }
 
 /** The A2A conversation of one deal, live: each agent message appears as soon as the agent produced it. */
-export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, deliverable }: LiveNegotiationProps) {
-  const { events, status } = useNegotiationStream(deal.id);
+export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, deliverable, compact, onOpen }: LiveNegotiationProps) {
+  const { events, status } = useNegotiationStream(deal.id, deal.state);
   const s = summarize(events);
   const end = useRef<HTMLDivElement>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
   useEffect(() => {
+    if (compact) return; // several conversations share the panel: don't make them fight over the scroll position
     end.current?.scrollIntoView({ block: "nearest" }); // newer browsers return a Promise here: never hand it to React as a cleanup
-  }, [events.length]);
+  }, [events.length, compact]);
 
-  if (status === "legacy") return <A2AChat deal={deal} creator={creator} avatar={avatar} />; // ended before live transcripts existed
-  if (status === "error") return <p className="error small">Could not open this conversation. Sign in again or reload the page.</p>;
-  if (status === "connecting" && events.length === 0) return <Spinner label="Connecting to the negotiation…" />;
+  // stacked conversations line up in the order they started (the parent is a flex column)
+  const started = events.length ? Math.floor(Date.parse(events[0].timestamp) / 1000) : undefined;
+  const header = compact && (
+    <div className="ln-head">
+      <Avatar src={avatar} name={creator} size={26} />
+      <strong>{creator}</strong>
+      {onOpen && (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen}>
+          Open
+        </button>
+      )}
+    </div>
+  );
+  const wrap = (body: ReactNode) =>
+    compact ? (
+      <section className="ln-stacked" style={started ? { order: started } : undefined} aria-label={`Conversation with ${creator}`}>
+        {header}
+        {body}
+      </section>
+    ) : (
+      body
+    );
+
+  if (status === "legacy") return wrap(<A2AChat deal={deal} creator={creator} avatar={avatar} />); // ended before live transcripts existed
+  if (status === "error") return wrap(<p className="error small">Could not open this conversation. Sign in again or reload the page.</p>);
+  if (status === "connecting" && events.length === 0) return wrap(<Spinner label="Connecting to the negotiation…" />);
 
   const model = (s.model ?? "hybrid") as CompensationModel;
   const live = !s.done;
@@ -79,12 +109,12 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
     }
   }
 
-  return (
+  return wrap(
     <div className="ln">
       <div className="ln-status">
         {live ? (
           <span className="ln-pill ln-live">
-            <span className="live-dot on" /> {status === "reconnecting" ? "Reconnecting…" : "Live"}
+            <span className="live-dot on" /> Live
           </span>
         ) : (
           <span className={`ln-pill ln-${outcome ?? "done"}`}>{OUTCOME_LABEL[outcome ?? ""] ?? "Finished"}</span>
@@ -105,27 +135,29 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
         <span style={{ width: `${progress * 100}%` }} className={live ? "" : `ln-bar-${outcome}`} />
       </div>
 
-      <div className="ln-agents">
-        <AgentCard
-          role="Advertiser"
-          name={adName}
-          thinking={s.thinking?.agent_role === "advertiser"}
-          label="Current offer"
-          offer={s.advertiserOffer}
-          model={model}
-          extra={limits ? `Budget ${usd(limits.budget)} · max ${usd(limits.max_fixed)} fixed, ${usd(limits.max_cpm)} CPM` : undefined}
-        />
-        <AgentCard
-          role="Influencer"
-          name={crName}
-          avatar={avatar}
-          thinking={s.thinking?.agent_role === "influencer"}
-          label="Current ask"
-          offer={s.creatorAsk}
-          model={model}
-          extra={deliverable ? `Deliverable: ${DELIVERABLE_LABEL[deliverable] ?? deliverable}` : undefined}
-        />
-      </div>
+      {!compact && (
+        <div className="ln-agents">
+          <AgentCard
+            role="Advertiser"
+            name={adName}
+            thinking={s.thinking?.agent_role === "advertiser"}
+            label="Current offer"
+            offer={s.advertiserOffer}
+            model={model}
+            extra={limits ? `Budget ${usd(limits.budget)} · max ${usd(limits.max_fixed)} fixed, ${usd(limits.max_cpm)} CPM` : undefined}
+          />
+          <AgentCard
+            role="Influencer"
+            name={crName}
+            avatar={avatar}
+            thinking={s.thinking?.agent_role === "influencer"}
+            label="Current ask"
+            offer={s.creatorAsk}
+            model={model}
+            extra={deliverable ? `Deliverable: ${DELIVERABLE_LABEL[deliverable] ?? deliverable}` : undefined}
+          />
+        </div>
+      )}
 
       {s.current && (
         <p className="ln-current">
@@ -140,8 +172,8 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
         ))}
         {s.thinking && (
           <div className={`ln-msg ln-${s.thinking.agent_role}`}>
-            <div className="ln-bubble ln-typing" aria-label={`${s.thinking.agent_name} is thinking`}>
-              <small>{s.thinking.agent_name} is thinking</small>
+            <div className="ln-bubble ln-typing" aria-label={`${s.thinking.agent_name} is preparing a response`}>
+              <small>{s.thinking.agent_name} is preparing a response…</small>
               <span className="ln-dots">
                 <i />
                 <i />
@@ -173,8 +205,8 @@ export function LiveNegotiation({ deal, viewer, creator, avatar, brand, limits, 
         </div>
       )}
 
-      {s.done && <FeedbackPanel dealId={deal.id} party={viewer} messages={s.messages.filter((m) => m.agent_role === viewer)} model={model} />}
-    </div>
+      {s.done && !compact && <FeedbackPanel dealId={deal.id} party={viewer} messages={s.messages.filter((m) => m.agent_role === viewer)} model={model} />}
+    </div>,
   );
 }
 

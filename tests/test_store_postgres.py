@@ -142,3 +142,24 @@ async def test_concurrent_sign_ins_create_one_user(store):
     a, b = (User(id=new_id("USR"), email=email, name="Racer", role="advertiser", created_at=now) for _ in range(2))
     first, second = await asyncio.gather(store.create_user(a), store.create_user(b))
     assert first.id == second.id and (await store.get_user_by_email(email)).id == first.id
+
+
+async def test_negotiation_sessions_queue_once_and_compare_and_set(store):
+    cid = new_id("CMP")
+
+    def row(creator, position):
+        return {"negotiation_id": new_id("DEAL"), "campaign_id": cid, "creator_id": creator, "position": position, "status": "QUEUED"}
+
+    first = await store.queue_negotiations([row("ava", 0), row("kai", 1)])
+    assert [s["creator_id"] for s in first] == ["ava", "kai"]
+    again = await store.queue_negotiations([row("kai", 0), row("ava", 1)])  # same creators again: the stored rows win
+    assert [(s["creator_id"], s["negotiation_id"]) for s in again] == [(s["creator_id"], s["negotiation_id"]) for s in first]
+
+    ava = first[0]
+    assert await store.save_negotiation_session({**ava, "status": "RUNNING"}, expect="QUEUED")
+    assert not await store.save_negotiation_session({**ava, "status": "CANCELLED"}, expect="QUEUED")  # lost the race
+    assert await store.save_negotiation_session({**ava, "status": "AGREED", "final_offer": {"cap": "30"}}, expect="RUNNING")
+    stored = await store.list_negotiation_sessions(cid)
+    assert [s["status"] for s in stored] == ["AGREED", "QUEUED"] and stored[0]["final_offer"] == {"cap": "30"}
+    assert await store.save_negotiation_session({**stored[1], "status": "FAILED"})  # unconditional save
+    assert [s["status"] for s in await store.list_negotiation_sessions(cid)] == ["AGREED", "FAILED"]

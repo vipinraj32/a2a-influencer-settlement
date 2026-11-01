@@ -5,6 +5,7 @@ import { ComplianceCard, ReviewForm } from "../../components/Compliance";
 import { needsReview } from "../../components/ContentChecks";
 import { ActivityChart, DevClock } from "../../components/CampaignPanels";
 import { LiveNegotiation } from "../../components/LiveNegotiation";
+import { NegotiationQueue, NegotiationSummary, useNegotiationQueue } from "../../components/NegotiationQueue";
 import { DealDetail } from "../../components/DealDetail";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
@@ -13,7 +14,7 @@ import { ActionButton, Address, Avatar, CampaignBadge, Card, Empty, ErrorText, N
 import { MODEL_LABEL, humanize, short, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { useMe, useSession } from "../../session";
-import type { CampaignDetail, Deal, DirectoryEntry, WalletBalance } from "../../types";
+import type { CampaignDetail, CompensationModel, Deal, DirectoryEntry, NegotiationSession, WalletBalance } from "../../types";
 import * as wallet from "../../wallet";
 import "./campaign.css";
 import "./dashboard.css";
@@ -283,6 +284,10 @@ function Assistant() {
   );
 }
 
+// A deal the list has not reloaded yet (its negotiation just started): enough for the live conversation to open
+const pendingDeal = (s: NegotiationSession) =>
+  ({ id: s.negotiation_id, campaign_id: s.campaign_id, influencer_id: s.creator_id, state: "NEGOTIATING" }) as Deal;
+
 export function CampaignView() {
   const { id = "" } = useParams();
   useMe();
@@ -292,6 +297,9 @@ export function CampaignView() {
   const directory = useResource(api.directory, "directory");
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<"chat" | "audit">("chat");
+  const [allChats, setAllChats] = useState(false); // every creator's conversation stacked, in the order they started
+  const [pinned, setPinned] = useState<string | null>(null); // a conversation the advertiser opened; null follows the live one
+  const queue = useNegotiationQueue(id);
   const [scope, setScope] = useState<"deal" | "campaign">("deal");
   const [query, setQuery] = useState("");
 
@@ -315,6 +323,14 @@ export function CampaignView() {
   const c = campaign.data;
   const money = spend(list);
   const deal = list.find((d) => d.id === selected) ?? null;
+  const sessions = queue.sessions;
+  const started = sessions.filter((s) => s.started_at);
+  const model = c.spec.compensation_model as CompensationModel;
+  // The conversation on screen: the one the advertiser picked, else whichever creator the backend is talking to now
+  const focusId = pinned ?? queue.progress?.current_negotiation_id ?? started.at(-1)?.negotiation_id ?? null;
+  const focusSession = sessions.find((s) => s.negotiation_id === focusId) ?? null;
+  const focusDeal = focusSession ? (list.find((d) => d.id === focusSession.negotiation_id) ?? pendingDeal(focusSession)) : null;
+  const creatorName = (creatorId: string) => names.get(creatorId) ?? creatorId;
   const name = (d: Deal) => names.get(d.influencer_id) ?? d.influencer_id;
   const q = query.trim().toLowerCase();
   const rows = list.filter((d) => !q || name(d).toLowerCase().includes(q) || d.state.toLowerCase().includes(q));
@@ -452,7 +468,7 @@ export function CampaignView() {
             </button>
           </div>
 
-          {list.length > 0 && (
+          {list.length > 0 && (tab === "audit" || sessions.length === 0) && (
             <label className="side-pick">
               <span className="sr-only">Deal</span>
               <select value={selected ?? ""} onChange={(e) => setSelected(e.target.value)}>
@@ -467,19 +483,81 @@ export function CampaignView() {
 
           <div className="side-body">
             {tab === "chat" ? (
-              deal ? (
-                <LiveNegotiation
-                  key={deal.id}
-                  deal={deal}
-                  viewer="advertiser"
-                  creator={name(deal)}
-                  avatar={avatars.get(deal.influencer_id)}
-                  brand={c.spec.advertiser}
-                  limits={{ budget: c.spec.budget, max_fixed: c.spec.max_fixed, max_cpm: c.spec.max_cpm, cap: c.spec.cap_per_creator }}
-                  deliverable={c.spec.deliverable}
-                />
+              sessions.length === 0 && list.length > 0 ? (
+                // campaigns from before the creator queue existed
+                deal && (
+                  <LiveNegotiation
+                    key={deal.id}
+                    deal={deal}
+                    viewer="advertiser"
+                    creator={name(deal)}
+                    avatar={avatars.get(deal.influencer_id)}
+                    brand={c.spec.advertiser}
+                    limits={{ budget: c.spec.budget, max_fixed: c.spec.max_fixed, max_cpm: c.spec.max_cpm, cap: c.spec.cap_per_creator }}
+                    deliverable={c.spec.deliverable}
+                  />
+                )
               ) : (
-                <Empty>{working ? "Waiting for the first creator agent to answer…" : "No conversations for this campaign."}</Empty>
+                <>
+                  {working || sessions.length > 0 ? (
+                    <NegotiationQueue
+                      progress={queue.progress}
+                      sessions={sessions}
+                      name={creatorName}
+                      avatar={(i) => avatars.get(i)}
+                      model={model}
+                      focus={focusId}
+                      following={pinned === null}
+                      all={allChats}
+                      onFocus={(negotiationId) => {
+                        setPinned(negotiationId);
+                        setSelected(negotiationId);
+                        setAllChats(false);
+                      }}
+                      onFollow={() => setPinned(null)}
+                      onAll={() => setAllChats((v) => !v)}
+                      canCancel
+                    />
+                  ) : null}
+                  {queue.error && <p className="error small">{queue.error}</p>}
+                  {queue.progress && <NegotiationSummary progress={queue.progress} sessions={sessions} name={creatorName} model={model} />}
+                  {allChats ? (
+                    <div className="ln-stack">
+                      {started.map((s) => {
+                        const d = list.find((x) => x.id === s.negotiation_id) ?? pendingDeal(s);
+                        return (
+                          <LiveNegotiation
+                            key={s.negotiation_id}
+                            compact
+                            deal={d}
+                            viewer="advertiser"
+                            creator={creatorName(s.creator_id)}
+                            avatar={avatars.get(s.creator_id)}
+                            brand={c.spec.advertiser}
+                            onOpen={() => {
+                              setPinned(s.negotiation_id);
+                              setSelected(s.negotiation_id);
+                              setAllChats(false);
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  ) : focusDeal && focusSession ? (
+                    <LiveNegotiation
+                      key={focusDeal.id}
+                      deal={focusDeal}
+                      viewer="advertiser"
+                      creator={creatorName(focusSession.creator_id)}
+                      avatar={avatars.get(focusSession.creator_id)}
+                      brand={c.spec.advertiser}
+                      limits={{ budget: c.spec.budget, max_fixed: c.spec.max_fixed, max_cpm: c.spec.max_cpm, cap: c.spec.cap_per_creator }}
+                      deliverable={c.spec.deliverable}
+                    />
+                  ) : (
+                    <Empty>{working ? "Advertiser agent is preparing the first offer…" : "No conversations for this campaign."}</Empty>
+                  )}
+                </>
               )
             ) : (
               <>

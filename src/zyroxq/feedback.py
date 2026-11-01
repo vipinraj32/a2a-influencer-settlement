@@ -171,7 +171,9 @@ def build_feedback(
     record = {
         "id": new_id("FBK"),
         "deal_id": deal.id,
+        "negotiation_id": deal.id,
         "campaign_id": deal.campaign_id,
+        "creator_id": deal.influencer_id,
         "party": role,
         "agent_role": role,
         "agent_id": f"advertiser-agent:{spec.owner_id}" if role == "advertiser" else f"influencer-agent:{deal.influencer_id}",

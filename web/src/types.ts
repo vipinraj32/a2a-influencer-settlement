@@ -418,13 +418,59 @@ export interface AuditEvent {
   detail: Record<string, unknown>;
 }
 
+export type SessionStatus = "QUEUED" | "RUNNING" | "AGREED" | "REJECTED" | "TIMED_OUT" | "FAILED" | "CANCELLED";
+
+export interface SessionOffer {
+  fixed_fee: string;
+  cpm: string;
+  cap: string;
+  round: number;
+  proposer?: "advertiser" | "influencer";
+}
+
+/** One creator's place in a campaign's negotiation queue. negotiation_id is the deal id. */
+export interface NegotiationSession {
+  negotiation_id: string;
+  campaign_id: string;
+  creator_id: string;
+  position: number;
+  status: SessionStatus;
+  outcome: string | null;
+  current_round: number;
+  maximum_rounds: number;
+  initial_offer: SessionOffer | null;
+  latest_offer: SessionOffer | null;
+  final_offer: SessionOffer | null;
+  started_at: string | null;
+  completed_at: string | null;
+  failure_reason: string;
+}
+
+export interface NegotiationProgress {
+  campaign_id: string;
+  total_creators: number;
+  completed_count: number;
+  agreed_count: number;
+  rejected_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  queued_count: number;
+  current_creator_id: string | null;
+  current_negotiation_id: string | null;
+  workflow_status: "starting" | "running" | "completed" | "cancelled" | "failed";
+  agreed_spend: string;
+  proposed_spend: string;
+}
+
 export interface LiveEvent {
-  type: "audit" | "deal" | "campaign" | "negotiation";
+  type: "audit" | "deal" | "campaign" | "negotiation" | "negotiation_progress";
   campaign_id: string;
   deal_id?: string | null;
   kind?: string;
   state?: DealState;
   status?: CampaignStatus;
+  event?: NegotiationEvent; // type "negotiation": the transcript event itself
+  progress?: NegotiationProgress; // type "negotiation_progress"
 }
 
 export interface CampaignInput {

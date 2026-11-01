@@ -317,6 +317,7 @@ def create_app(
             if hasattr(state.ctx.gateway, "sink"):
                 state.ctx.gateway.sink = state.deals.handle_webhook  # simulated HSP delivers webhooks in-process
             state.runner = CampaignRunner(state.deals, await _checkpointer(settings, stack))
+            await state.runner.recover()  # campaigns a previous process left mid-negotiation continue with their next creator
             state.assistant = Assistant(llm, f"{base}/mcp/") if llm is not None else None
             await stack.enter_async_context(mcp.session_manager.run())
             for w in state.ctx.warnings:
@@ -327,7 +328,7 @@ def create_app(
             finally:
                 if ticker:
                     ticker.cancel()
-                await state.runner.wait_idle()
+                await state.runner.shutdown()
                 if hasattr(state.ctx.store, "close"):
                     await state.ctx.store.close()
 
@@ -599,7 +600,7 @@ def create_app(
     # ---- advertiser: campaigns -----------------------------------------------------
 
     @app.post("/api/campaigns", status_code=201)
-    async def create_campaign(body: CampaignCreate, user: AdvertiserUser) -> dict[str, Any]:
+    async def create_campaign(body: CampaignCreate, user: AdvertiserUser, request: Request) -> dict[str, Any]:
         if not user.wallet:
             raise HTTPException(409, "link your wallet first: it signs the Payment Mandates")
         # Disclosure gate: every jurisdiction needs a policy and a required tag that policy approves
@@ -612,8 +613,32 @@ def create_app(
             "disclosure_policies": [p.id for p in policies.values() if p],
             "agent_policy_version": latest["version"] if latest and latest.get("role") == "advertiser" else 0,
         }
-        campaign = await state.runner.start(CampaignSpec(**body.model_dump(), **snapshot, owner_id=user.id, payer=user.wallet))
+        # A double-click or a retried request carries the same Idempotency-Key: it gets the campaign the first one started
+        key = request.headers.get("idempotency-key", "").strip()[:128]
+        spec_id = new_id("CMP")
+        if key and (holder := await state.ctx.store.claim("campaign_start", f"{user.id}:{key}", spec_id)) != spec_id:
+            for _ in range(50):  # the first request may still be saving it
+                if (existing := await state.ctx.store.get_campaign(holder)) is not None:
+                    return existing.model_dump(mode="json")
+                await asyncio.sleep(0.1)
+            raise HTTPException(409, "this campaign is already being started")
+        campaign = await state.runner.start(CampaignSpec(**body.model_dump(), **snapshot, id=spec_id, owner_id=user.id, payer=user.wallet))
         return campaign.model_dump(mode="json")
+
+    @app.get("/api/campaigns/{campaign_id}/negotiations")
+    async def campaign_negotiations(campaign_id: str, user: AdvertiserUser) -> dict[str, Any]:
+        """The creator queue: one session per creator in the order they are negotiated with, plus campaign progress.
+        What a refreshed page restores; each conversation's messages come from /api/negotiations/{id}/events."""
+        await readable_campaign(campaign_id, user)
+        return {"progress": await state.deals.progress(campaign_id), "sessions": await state.deals.negotiation_sessions(campaign_id)}
+
+    @app.post("/api/campaigns/{campaign_id}/negotiations/cancel")
+    async def cancel_campaign_negotiations(campaign_id: str, user: AdvertiserUser) -> dict[str, Any]:
+        """Stops the creator queue: no further creator is contacted and the running negotiation stops before its next message."""
+        campaign = await readable_campaign(campaign_id, user)
+        if campaign.negotiation_cancelled:
+            return await state.deals.progress(campaign_id)
+        return await state.deals.cancel_campaign_negotiations(campaign, user.id)
 
     @app.post("/api/campaigns/content-checks/suggest")
     async def suggest_content_checks(body: ChecksSuggestIn, _: AdvertiserUser) -> dict[str, Any]:

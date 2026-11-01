@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from psycopg.types.json import Jsonb
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from ..models import AuditEvent, Campaign, Deal, User
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -98,6 +102,15 @@ CREATE TABLE IF NOT EXISTS negotiation_rounds (
     data        JSONB NOT NULL,
     PRIMARY KEY (deal_id, round)
 );
+CREATE TABLE IF NOT EXISTS negotiation_sessions (
+    negotiation_id TEXT PRIMARY KEY,
+    campaign_id    TEXT NOT NULL,
+    creator_id     TEXT NOT NULL,
+    position       INTEGER NOT NULL,
+    status         TEXT NOT NULL,
+    data           JSONB NOT NULL,
+    UNIQUE (campaign_id, creator_id)
+);
 CREATE TABLE IF NOT EXISTS negotiation_feedback (
     id          TEXT PRIMARY KEY,
     deal_id     TEXT NOT NULL,
@@ -139,20 +152,41 @@ CREATE INDEX IF NOT EXISTS lessons_owner_idx ON agent_improvement_examples (owne
 KEEPALIVE = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3, "connect_timeout": 10}
 
 
+OPEN_TIMEOUT = 15  # seconds per attempt
+OPEN_ATTEMPTS = 4  # a database that is waking up or briefly unreachable at startup gets about a minute and a half
+
+
+class DatabaseUnavailable(RuntimeError):
+    pass
+
+
 async def open_pool(database_url: str, *, max_size: int = 10, **kwargs: Any) -> AsyncConnectionPool:
-    pool = AsyncConnectionPool(
-        database_url,
-        min_size=1,
-        max_size=max_size,
-        open=False,
-        check=AsyncConnectionPool.check_connection,
-        max_idle=120,
-        max_lifetime=30 * 60,
-        reconnect_timeout=60,
-        kwargs={**KEEPALIVE, **kwargs},
+    for attempt in range(1, OPEN_ATTEMPTS + 1):
+        pool = AsyncConnectionPool(
+            database_url,
+            min_size=1,
+            max_size=max_size,
+            open=False,
+            check=AsyncConnectionPool.check_connection,
+            max_idle=120,
+            max_lifetime=30 * 60,
+            reconnect_timeout=60,
+            kwargs={**KEEPALIVE, **kwargs},
+        )
+        try:
+            await pool.open(wait=True, timeout=OPEN_TIMEOUT)
+            return pool
+        except PoolTimeout:
+            await pool.close(timeout=1)  # stop its connect workers before trying again
+            if attempt == OPEN_ATTEMPTS:
+                break
+            log.warning("database not reachable yet (attempt %s of %s), retrying in %ss", attempt, OPEN_ATTEMPTS, 2**attempt)
+            await asyncio.sleep(2**attempt)
+    # never echo the URL: it holds the password
+    raise DatabaseUnavailable(
+        f"could not connect to PostgreSQL after {OPEN_ATTEMPTS} attempts. Check that the database is running "
+        "(hosted free tiers can be suspended or expired) and that DATABASE_URL in .env is correct, then start again."
     )
-    await pool.open(wait=True, timeout=15)
-    return pool
 
 
 class PostgresStore:
@@ -360,6 +394,40 @@ class PostgresStore:
         async with self.pool.connection() as conn:
             rows = await (await conn.execute(
                 "SELECT data FROM negotiation_messages WHERE deal_id = %s AND event_id > %s ORDER BY event_id", (deal_id, after)
+            )).fetchall()  # fmt: skip
+        return [r[0] for r in rows]
+
+    async def queue_negotiations(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        async with self.pool.connection() as conn, conn.transaction():
+            for row in rows:
+                await conn.execute(
+                    "INSERT INTO negotiation_sessions (negotiation_id, campaign_id, creator_id, position, status, data) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (campaign_id, creator_id) DO NOTHING",
+                    (row["negotiation_id"], row["campaign_id"], row["creator_id"], row["position"], row["status"], Jsonb(row)),
+                )
+        return await self.list_negotiation_sessions(rows[0]["campaign_id"])
+
+    async def save_negotiation_session(self, row: dict[str, Any], expect: str | None = None) -> bool:
+        async with self.pool.connection() as conn:
+            if expect is None:
+                cur = await conn.execute(
+                    "INSERT INTO negotiation_sessions (negotiation_id, campaign_id, creator_id, position, status, data) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (negotiation_id) DO UPDATE SET status = EXCLUDED.status, data = EXCLUDED.data",
+                    (row["negotiation_id"], row["campaign_id"], row["creator_id"], row["position"], row["status"], Jsonb(row)),
+                )
+            else:
+                cur = await conn.execute(
+                    "UPDATE negotiation_sessions SET status = %s, data = %s WHERE negotiation_id = %s AND status = %s",
+                    (row["status"], Jsonb(row), row["negotiation_id"], expect),
+                )
+            return cur.rowcount == 1
+
+    async def list_negotiation_sessions(self, campaign_id: str) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT data FROM negotiation_sessions WHERE campaign_id = %s ORDER BY position, negotiation_id", (campaign_id,)
             )).fetchall()  # fmt: skip
         return [r[0] for r in rows]
 

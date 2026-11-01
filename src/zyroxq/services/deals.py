@@ -34,6 +34,7 @@ from ..models import (
     Payout,
     Proof,
     ProofCheck,
+    new_id,
     transition_allowed,
 )
 from ..policy import PolicyResult, check_cart, check_terms, performance_payout
@@ -56,6 +57,59 @@ POLICY_KIND = "agent_policy"
 # Audit kinds only the advertiser sees: they name the advertiser's limits or internal reasoning
 ADVERTISER_PRIVATE_EVENTS = {"negotiation_move", "negotiation_decision", "policy_gate", "approval_decision", "campaign_full",
                              "discovered", "agent_unreachable", "authorization_redrafted", "lessons_applied"}  # fmt: skip
+
+
+# Negotiation sessions (one per creator in a campaign, run one after another)
+SESSION_TERMINAL = frozenset({"AGREED", "REJECTED", "TIMED_OUT", "FAILED", "CANCELLED"})
+OUTCOME_STATUS = {
+    "agreed": "AGREED",
+    "rejected": "REJECTED",
+    "walked_away": "REJECTED",
+    "screened_out": "REJECTED",
+    "escalated": "REJECTED",
+    "timeout": "TIMED_OUT",  # round limit reached
+    "no_reply": "TIMED_OUT",  # an agent did not answer within negotiation_reply_timeout_seconds
+    "error": "FAILED",
+    "interrupted": "FAILED",  # the server stopped mid-negotiation; it is never re-run
+    "cancelled": "CANCELLED",
+}
+
+
+def _cap(offer: dict[str, Any] | None) -> Decimal:
+    return Decimal(str(offer["cap"])) if offer else Decimal("0")
+
+
+def campaign_progress(campaign: Campaign, sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where the campaign's creator queue stands, computed only from the persisted sessions. Agreed spend counts the
+    caps (most each deal can pay) of AGREED negotiations; proposed spend is the latest offer on the table for every
+    creator, agreed or not. Neither is a payment: nothing moves until the advertiser's wallet signs."""
+
+    def count(*statuses: str) -> int:
+        return sum(1 for x in sessions if x["status"] in statuses)
+
+    running = next((x for x in sessions if x["status"] == "RUNNING"), None)
+    queued = count("QUEUED")
+    if running or (queued and not campaign.negotiation_cancelled):
+        workflow = "running"
+    elif sessions:
+        workflow = "cancelled" if campaign.negotiation_cancelled else "completed"
+    else:
+        workflow = "failed" if campaign.status == "failed" else "starting"
+    return {
+        "campaign_id": campaign.spec.id,
+        "total_creators": len(sessions),
+        "completed_count": count(*SESSION_TERMINAL),
+        "agreed_count": count("AGREED"),
+        "rejected_count": count("REJECTED"),
+        "failed_count": count("FAILED", "TIMED_OUT"),
+        "cancelled_count": count("CANCELLED"),
+        "queued_count": queued,
+        "current_creator_id": running["creator_id"] if running else None,
+        "current_negotiation_id": running["negotiation_id"] if running else None,
+        "workflow_status": workflow,
+        "agreed_spend": str(sum((_cap(x["final_offer"]) for x in sessions if x["status"] == "AGREED"), Decimal("0"))),
+        "proposed_spend": str(sum((_cap(x["latest_offer"]) for x in sessions), Decimal("0"))),
+    }
 
 
 class DealError(Exception):
@@ -149,6 +203,8 @@ class DealService:
         states = {d.state for d in deals}
         if c.status in ("planning", "negotiating", "failed") and not (states - {DealState.NEGOTIATING}):
             return
+        if not c.negotiation_cancelled and any(x["status"] in ("QUEUED", "RUNNING") for x in await self.negotiation_sessions(campaign_id)):
+            return  # creators are still waiting their turn: the campaign is negotiating
         terminal = {DealState.REJECTED, DealState.BLOCKED, DealState.PAYMENT_FAILED, DealState.PAYMENT_EXPIRED, DealState.COMPLETED,
                     DealState.EXPIRED_REFUNDED}  # fmt: skip
         if DealState.AWAITING_APPROVAL in states:
@@ -202,6 +258,7 @@ class DealService:
         event = {
             "negotiation_id": deal.id,
             "campaign_id": deal.campaign_id,
+            "creator_id": deal.influencer_id,
             "event_type": event_type,
             "agent_role": agent_role,
             "agent_id": agent_id,
@@ -239,8 +296,116 @@ class DealService:
         await self.end_negotiation(deal, DealState.REJECTED, "cancelled by the advertiser")
         system = ("system", "zyroxq", "ZyroXQ")
         await self.negotiation_event(deal, "negotiation_rejected", *system, content="Cancelled by the advertiser.", outcome="cancelled")
+        session = next((x for x in await self.negotiation_sessions(deal.campaign_id) if x["negotiation_id"] == deal.id), None)
+        if session is not None and session["status"] not in SESSION_TERMINAL:
+            await self.finish_session(session, "cancelled", reason="cancelled by the advertiser")
         await self.negotiation_event(deal, "negotiation_completed", *system, outcome="cancelled")
         return True
+
+    # ---- negotiation sessions: the campaign's creator queue ----------------------------
+    # The campaign graph runs one session at a time (see agents/advertiser/graph.py). Every status change is a
+    # compare-and-set on the stored status, so a cancel and a start can never both win, and nothing runs twice.
+
+    async def queue_negotiations(self, spec: CampaignSpec, creator_ids: list[str]) -> list[dict[str, Any]]:
+        """One QUEUED session per creator, in selection order. Re-queuing (a resumed run) keeps the sessions already stored."""
+        unique = list(dict.fromkeys(creator_ids))  # the same creator is never negotiated with twice in one campaign
+        rows = [
+            {
+                "negotiation_id": new_id("DEAL"),
+                "campaign_id": spec.id,
+                "creator_id": creator_id,
+                "position": position,
+                "advertiser_agent_id": f"advertiser-agent:{spec.owner_id}",
+                "influencer_agent_id": f"influencer-agent:{creator_id}",
+                "status": "QUEUED",
+                "outcome": None,
+                "current_round": 0,
+                "maximum_rounds": spec.max_rounds,
+                "initial_offer": None,
+                "latest_offer": None,
+                "final_offer": None,
+                "queued_at": self.ctx.clock.now().isoformat(),
+                "started_at": None,
+                "completed_at": None,
+                "failure_reason": "",
+            }
+            for position, creator_id in enumerate(unique)
+        ]
+        sessions = await self.ctx.store.queue_negotiations(rows)
+        await self.publish_progress(spec.id)
+        return sessions
+
+    async def negotiation_sessions(self, campaign_id: str) -> list[dict[str, Any]]:
+        return await self.ctx.store.list_negotiation_sessions(campaign_id)
+
+    async def start_session(self, session: dict[str, Any]) -> dict[str, Any] | None:
+        """QUEUED → RUNNING. None when someone else moved it first (cancelled, or another run started it)."""
+        row = {**session, "status": "RUNNING", "started_at": self.ctx.clock.now().isoformat()}
+        if not await self.ctx.store.save_negotiation_session(row, expect="QUEUED"):
+            return None
+        await self.publish_progress(session["campaign_id"])
+        return row
+
+    async def session_offer(self, session: dict[str, Any], offer: Offer) -> None:
+        """Records the offer now on the table (either side) and the round it belongs to."""
+        amounts = {"fixed_fee": str(offer.fixed_fee), "cpm": str(offer.cpm), "cap": str(offer.cap), "round": offer.round, "proposer": offer.proposer}
+        session["latest_offer"] = amounts
+        session["initial_offer"] = session["initial_offer"] or amounts
+        session["current_round"] = max(session["current_round"], offer.round)
+        await self.ctx.store.save_negotiation_session(session, expect="RUNNING")
+        await self.publish_progress(session["campaign_id"])
+
+    async def finish_session(self, session: dict[str, Any], outcome: str, *, final_offer: Offer | None = None, reason: str = "") -> dict[str, Any]:
+        """The one place a creator's negotiation becomes terminal. The campaign graph then starts the next QUEUED creator."""
+        status = OUTCOME_STATUS.get(outcome, "FAILED")
+        session.update(status=status, outcome=outcome, completed_at=self.ctx.clock.now().isoformat(),
+                       failure_reason=reason if status in ("FAILED", "TIMED_OUT", "CANCELLED") else "")  # fmt: skip
+        if final_offer is not None:
+            session["final_offer"] = {"fixed_fee": str(final_offer.fixed_fee), "cpm": str(final_offer.cpm), "cap": str(final_offer.cap),
+                                      "round": final_offer.round, "offer": final_offer.model_dump(mode="json")}  # fmt: skip
+        if not await self.ctx.store.save_negotiation_session(session, expect="RUNNING"):
+            await self.ctx.store.save_negotiation_session(session)  # not RUNNING (an interrupted run being closed): still record it
+        await self.audit(session["campaign_id"], session["negotiation_id"], "advertiser-agent", "negotiation_finished",
+                         creator=session["creator_id"], status=status, outcome=outcome)  # fmt: skip
+        await self.publish_progress(session["campaign_id"])
+        return session
+
+    async def abandon_session(self, session: dict[str, Any], reason: str,
+                              message: str = "This negotiation stopped when the server restarted. Nothing was agreed or paid.") -> dict[str, Any]:  # fmt: skip
+        """A session left RUNNING by a run that died (server restart). Re-running it could repeat what the agents already
+        said and signed, so it is closed as FAILED with a visible message, and the queue moves on."""
+        deal = await self.ctx.store.get_deal(session["negotiation_id"])
+        if deal is None or deal.state != DealState.NEGOTIATING:
+            return await self.finish_session(session, "interrupted", reason=reason)
+        await self.end_negotiation(deal, DealState.REJECTED, reason)
+        system = ("system", "zyroxq", "ZyroXQ")
+        await self.negotiation_event(deal, "negotiation_error", *system, content=message, outcome="error", error="interrupted")
+        await self.finish_session(session, "interrupted", reason=reason)
+        await self.negotiation_event(deal, "negotiation_completed", *system, outcome="error")
+        return session
+
+    async def cancel_campaign_negotiations(self, campaign: Campaign, by: str) -> dict[str, Any]:
+        """Stops the creator queue: QUEUED sessions become CANCELLED and the running one is asked to stop before its
+        next message. Agreements already reached stay; they still need the advertiser's signature to be paid."""
+        campaign.negotiation_cancelled = True
+        await self.save_campaign(campaign)
+        await self.audit(campaign.spec.id, None, "human", "negotiations_cancelled", by=by)
+        for x in await self.negotiation_sessions(campaign.spec.id):
+            if x["status"] == "QUEUED":
+                row = {**x, "status": "CANCELLED", "outcome": "cancelled", "completed_at": self.ctx.clock.now().isoformat(),
+                       "failure_reason": "cancelled by the advertiser before it started"}  # fmt: skip
+                await self.ctx.store.save_negotiation_session(row, expect="QUEUED")
+            elif x["status"] == "RUNNING" and (deal := await self.ctx.store.get_deal(x["negotiation_id"])) is not None:
+                await self.cancel_negotiation(deal, by)
+        await self.publish_progress(campaign.spec.id)
+        return await self.progress(campaign.spec.id)
+
+    async def progress(self, campaign_id: str) -> dict[str, Any]:
+        return campaign_progress(await self.campaign(campaign_id), await self.negotiation_sessions(campaign_id))
+
+    async def publish_progress(self, campaign_id: str) -> None:
+        event = {"type": "negotiation_progress", "campaign_id": campaign_id, "progress": await self.progress(campaign_id)}
+        await self._publish(event, campaign_id, None)  # the advertiser only: other creators' terms are not the creator's business
 
     async def record_approval(self, deal_id: str, kind: str, by: str, approved: bool, note: str = "") -> Deal:
         deal = await self.get(deal_id)
