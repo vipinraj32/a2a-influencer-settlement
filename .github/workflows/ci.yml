@@ -1,0 +1,119 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint, contract, tests)
+    runs-on: ubuntu-latest
+    services:
+      # throwaway database for the PostgreSQL store tests (never the Render one)
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: zyroxq
+          POSTGRES_PASSWORD: zyroxq
+          POSTGRES_DB: zyroxq_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U zyroxq" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      UV_LINK_MODE: copy
+      TEST_DATABASE_URL: postgresql://zyroxq:zyroxq@localhost:5432/zyroxq_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.22"
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Requirements files match uv.lock
+        run: |
+          uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -o requirements.txt
+          uv export --format requirements-txt --no-hashes --only-dev --no-emit-project -o requirements-dev.txt
+          git diff --exit-code -- requirements.txt requirements-dev.txt
+      - name: Contract artifact matches CampaignEscrow.sol
+        run: |
+          uv run python scripts/compile_contracts.py
+          git diff --exit-code -- contracts/build/CampaignEscrow.json
+      - name: Tests
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (typecheck, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.11"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+  docker:
+    name: Docker image (build, smoke run)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: zyroxq:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke run (simulated mode, in-memory store)
+        run: |
+          docker run -d --name zx -p 8000:10000 -e PORT=10000 zyroxq:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8000/healthz && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8000/healthz
+          curl -fsS http://localhost:8000/api/status | python3 -c "import json,sys; s=json.load(sys.stdin); assert s['settlement_mode']=='simulated', s"
+          curl -fsS http://localhost:8000/ | grep -qi "<div id=\"root\""
+      - name: Container logs
+        if: always()
+        run: docker logs zx || true
+
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK_URL is not set: skipping deploy (add it under Settings → Secrets → Actions)"
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null
+          echo "Render deploy triggered for ${GITHUB_SHA::7}"

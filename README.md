@@ -591,6 +591,33 @@ uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -o re
 uv export --format requirements-txt --no-hashes --only-dev --no-emit-project -o requirements-dev.txt
 ```
 
+## Docker, CI/CD and Render
+
+**Docker.** `Dockerfile` builds the React app and the Python server into one image (non-root, `/healthz` health
+check, listens on `$PORT`). Secrets come from the environment, never the image:
+
+```bash
+docker build -t zyroxq .
+docker run --env-file .env -p 8000:8000 zyroxq   # http://localhost:8000
+```
+
+**Pipeline** (`.github/workflows/ci.yml`) runs on every push and pull request:
+1. Backend: ruff, requirements files in sync with `uv.lock`, `contracts/build/CampaignEscrow.json` matches the
+   `.sol` source, and the full test suite, including the PostgreSQL tests against a throwaway CI database.
+2. Frontend: `npm ci && npm run build` (typecheck + Vite).
+3. Docker: builds the image, starts it, and checks `/healthz`, `/api/status` and the app shell.
+4. Deploy (pushes to `main` only, after 1–3 pass): calls the Render deploy hook.
+
+**Render setup (once):**
+1. Dashboard → **New → Blueprint** → this repo (`render.yaml`). If the service already exists, switch it to
+   **Runtime: Docker** (Settings → Build & Deploy) and set **Auto-Deploy: Off**, so only a passing pipeline deploys.
+2. Fill the environment variables marked "sync: false": `PUBLIC_BASE_URL` (`https://<service>.onrender.com`),
+   `DATABASE_URL` (the database's *Internal* URL), Google OAuth, `YOUTUBE_API_KEY`, `VERIFIER_PRIVATE_KEY`, and the
+   payment-mode keys you use. Add `https://<service>.onrender.com/auth/google/callback` to the Google OAuth client.
+3. Settings → **Deploy Hook** → copy the URL into GitHub → repo Settings → Secrets and variables → Actions →
+   `RENDER_DEPLOY_HOOK_URL`. Without it the pipeline still tests everything and skips the deploy with a warning.
+4. Hosted HSP mode only: upload the merchant key as a Secret File named `merchant_private_key.pem`.
+
 ## References
 
 - HSP (HashKey Merchant) API docs: https://hashkey-merchant.github.io/#/

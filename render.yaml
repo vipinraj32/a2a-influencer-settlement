@@ -1,0 +1,56 @@
+# Render Blueprint (Dashboard → New → Blueprint, pick this repo). One Docker web service; the database is your
+# existing Render PostgreSQL (paste its Internal Database URL into DATABASE_URL).
+# Deploys come from GitHub Actions (.github/workflows/ci.yml) after lint, tests and the image smoke test pass, through
+# the service's deploy hook, so Render's own auto-deploy is off. Values marked sync: false are entered in the dashboard
+# and never live in git.
+services:
+  - type: web
+    name: zyroxq
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      # required
+      - key: PUBLIC_BASE_URL # https://<service>.onrender.com, also the Google OAuth redirect base
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: VERIFIER_PRIVATE_KEY # stable attestation key; must match the escrow's verifier in on-chain modes
+        sync: false
+      # payments: simulated | hosted | sepolia
+      - key: PAYMENT_MODE
+        value: simulated
+      # optional
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MCP_API_TOKEN
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      # on-chain escrow (hosted / sepolia)
+      - key: ESCROW_ADDRESS
+        sync: false
+      - key: OPERATOR_PRIVATE_KEY
+        sync: false
+      - key: SEPOLIA_RPC_URL
+        sync: false
+      # hosted HSP: upload the merchant key as a Secret File named merchant_private_key.pem
+      - key: HSP_APP_KEY
+        sync: false
+      - key: HSP_APP_SECRET
+        sync: false
+      - key: HSP_MERCHANT_PRIVATE_KEY_PATH
+        value: /etc/secrets/merchant_private_key.pem

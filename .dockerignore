@@ -1,0 +1,25 @@
+# secrets never enter the image or the build context
+.env
+.env.*
+!.env.example
+keys/
+*.pem
+
+# local state and tooling
+.git
+.github
+.venv
+**/__pycache__
+*.py[oc]
+.pytest_cache
+.ruff_cache
+web/node_modules
+src/zyroxq/api/static
+
+# not needed to run the app
+tests/
+Reference UI/
+AGENTS.md
+conversation-*.txt
+*.md
+!README.md

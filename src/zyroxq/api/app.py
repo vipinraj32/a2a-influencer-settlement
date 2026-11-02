@@ -582,6 +582,11 @@ def create_app(
 
     # ---- platform ------------------------------------------------------------------
 
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict[str, bool]:
+        """Liveness for Render and the CI smoke test: the process is up and serving (no chain or HSP calls)."""
+        return {"ok": True}
+
     @app.get("/api/status")
     async def status() -> dict[str, Any]:
         ctx = state.ctx
