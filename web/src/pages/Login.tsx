@@ -46,10 +46,10 @@ export function Login() {
       </aside>
 
       <main className="auth-main">
-        <Link to="/" className="auth-back">
-          ← Back to home
-        </Link>
         <div className="auth-card">
+          <Link to="/" className="auth-back">
+            ← Back to home
+          </Link>
           <h2>{current.title}</h2>
           <p className="auth-sub">{current.sub}</p>
           {error && <Notice tone="bad">{error}</Notice>}

@@ -47,9 +47,16 @@ def build_mcp(api_base: str, http: httpx.AsyncClient | None = None, streamable_h
 
     @mcp.tool()
     async def list_campaigns(ctx: Context) -> list[dict[str, Any]]:
-        """List campaigns with status, budget and niche."""
+        """List campaigns with name, status, budget and niche."""
         return [
-            {"id": c["spec"]["id"], "advertiser": c["spec"]["advertiser"], "status": c["status"], "budget": c["spec"]["budget"], "niche": c["spec"]["niche"]}
+            {
+                "id": c["spec"]["id"],
+                "name": c["spec"].get("name", ""),
+                "advertiser": c["spec"]["advertiser"],
+                "status": c["status"],
+                "budget": c["spec"]["budget"],
+                "niche": c["spec"]["niche"],
+            }
             for c in await get("/api/campaigns", ctx)
         ]
 

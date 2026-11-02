@@ -7,12 +7,13 @@ import type { Deal } from "../types";
 import { ContentReportView } from "./ContentChecks";
 import { LiveNegotiation } from "./LiveNegotiation";
 import { NegotiationRoom } from "./NegotiationRoom";
+import { PaymentLifecycle, PayoutTransactions, TxLink } from "./Payments";
 import { ProofHistory, ProofReviewCard } from "./ProofReview";
 import { Timeline } from "./Timeline";
 import { Address, Card, Empty, StateBadge } from "./ui";
 
 /** Everything about one deal, shared by the advertiser and influencer views. `actions` renders role-specific buttons. */
-export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactNode; actions?: ReactNode }) {
+export function DealDetail({ deal, title, actions, conversation = true }: { deal: Deal; title: ReactNode; actions?: ReactNode; conversation?: boolean }) {
   const me = useMe().user;
   const role = me.role;
   const { status } = useSession();
@@ -38,7 +39,7 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
         </div>
       )}
 
-      {role === "influencer" && (
+      {role === "influencer" && conversation && (
         <>
           <h3>Conversation with the advertiser's agent</h3>
           <LiveNegotiation key={deal.id} deal={deal} viewer="influencer" creator={me.name} avatar={me.picture} brand={deal.terms?.advertiser ?? "Advertiser"} />
@@ -95,7 +96,7 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
 
       {(deal.payment_status || deal.payer) && (
         <>
-          <h3>Payment (HSP)</h3>
+          <h3>{status?.hsp_in_payment_path ? "Payment (HSP)" : status?.settlement_mode === "sepolia" ? `Payment (${status.chain.name}, no HSP)` : "Payment"}</h3>
           <dl className="kv">
             <dt>Payer wallet</dt>
             <dd>
@@ -108,16 +109,23 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
             {deal.funding_tx && (
               <>
                 <dt>Funding tx</dt>
-                <dd className="mono">
-                  {explorer && !deal.funding_simulated ? (
-                    <a href={`${explorer}/tx/${deal.funding_tx}`} target="_blank" rel="noreferrer">
-                      {deal.funding_tx.slice(0, 18)}…
-                    </a>
-                  ) : (
-                    `${deal.funding_tx.slice(0, 18)}…`
-                  )}
+                <dd>
+                  <TxLink hash={deal.funding_tx} explorer={explorer} simulated={deal.funding_simulated} />
                   {deal.funding_simulated && <span className="chip warn">simulated, no USDC moved</span>}
                 </dd>
+                {!deal.funding_simulated && (
+                  <>
+                    <dt>Deposited</dt>
+                    <dd>
+                      {deal.terms ? usd(deal.terms.cap) : "—"} {status?.token.coin} into escrow <Address value={status?.escrow.address} explorer={explorer} />
+                    </dd>
+                    <dt>Confirmed</dt>
+                    <dd>
+                      {deal.funding_block != null ? `block ${deal.funding_block}, ` : ""}
+                      {status?.settlement_min_confirmations ?? 1}+ confirmations before the deal counted as funded
+                    </dd>
+                  </>
+                )}
               </>
             )}
             {deal.payment_attempts.length > 0 && (
@@ -164,26 +172,12 @@ export function DealDetail({ deal, title, actions }: { deal: Deal; title: ReactN
         </>
       )}
 
-      {deal.payouts.length > 0 && (
+      {/* the creator's deal page shows these in its own Payment card, at the top */}
+      {role === "advertiser" && deal.funding_tx && (
         <>
           <h3>Payouts · {usd(paid)} to creator</h3>
-          <table className="table compact">
-            <tbody>
-              {deal.payouts.map((p, i) => (
-                <tr key={i}>
-                  <td>
-                    {humanize(p.kind)}
-                    {p.simulated && <span className="chip warn">simulated</span>}
-                  </td>
-                  <td>{usd(p.amount)}</td>
-                  <td>
-                    <Address value={p.to} explorer={explorer} />
-                  </td>
-                  <td className="muted">{when(p.at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <PaymentLifecycle deal={deal} />
+          <PayoutTransactions payouts={deal.payouts} />
         </>
       )}
 

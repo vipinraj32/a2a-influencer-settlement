@@ -46,8 +46,10 @@ class PaymentMandate(BaseModel):
         return self.x402["payload"]["authorization"]
 
 
-def token_domain(token: TokenInfo, name: str = "USD Coin", version: str = "2") -> dict[str, Any]:
-    return {"name": name, "version": version, "chainId": token.chain_id, "verifyingContract": token.contract_address}
+def token_domain(token: TokenInfo, name: str | None = None, version: str | None = None) -> dict[str, Any]:
+    """The token's own EIP-712 domain: a signature under any other name or version is invalid on chain."""
+    return {"name": name or token.domain_name, "version": version or token.domain_version, "chainId": token.chain_id,
+            "verifyingContract": token.contract_address}  # fmt: skip
 
 
 def to_token_units(amount: Decimal, decimals: int) -> int:
@@ -75,7 +77,7 @@ def _typed_message(authorization: dict[str, str]) -> dict[str, Any]:
     return {**authorization, **{k: int(authorization[k]) for k in ("value", "validAfter", "validBefore")}}
 
 
-def payment_typed_data(authorization: dict[str, str], token: TokenInfo, domain_name: str = "USD Coin", domain_version: str = "2") -> dict[str, Any]:
+def payment_typed_data(authorization: dict[str, str], token: TokenInfo, domain_name: str | None = None, domain_version: str | None = None) -> dict[str, Any]:
     """Full EIP-712 document for a browser wallet's `eth_signTypedData_v4` (uint256 values as decimal strings)."""
     return {
         "types": {
@@ -112,8 +114,8 @@ def sign_payment_mandate(
     token: TokenInfo,
     valid_after: int,
     valid_before: int,
-    domain_name: str = "USD Coin",
-    domain_version: str = "2",
+    domain_name: str | None = None,
+    domain_version: str | None = None,
 ) -> PaymentMandate:
     """Signs with a local key — what a browser wallet does for `payment_typed_data` (used by tests and scripts)."""
     authorization = payment_authorization(Account.from_key(private_key).address, cart_contents, token, valid_after, valid_before)
@@ -126,7 +128,7 @@ def sign_payment_mandate(
     return mandate_from_signature(authorization, "0x" + signed.signature.hex().removeprefix("0x"), cart_contents, payment_request_id, token)
 
 
-def recover_payment_mandate_signer(mandate: PaymentMandate, token: TokenInfo, domain_name: str = "USD Coin", domain_version: str = "2") -> str:
+def recover_payment_mandate_signer(mandate: PaymentMandate, token: TokenInfo, domain_name: str | None = None, domain_version: str | None = None) -> str:
     encoded = encode_typed_data(
         domain_data=token_domain(token, domain_name, domain_version),
         message_types=TRANSFER_WITH_AUTHORIZATION_TYPES,

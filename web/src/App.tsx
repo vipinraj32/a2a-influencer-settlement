@@ -11,7 +11,9 @@ import { Creators } from "./pages/advertiser/Creators";
 import { CreatorProfile } from "./pages/CreatorProfile";
 import { NewCampaign } from "./pages/advertiser/NewCampaign";
 import { AgentPage } from "./pages/influencer/AgentPage";
+import { InfluencerDealPage } from "./pages/influencer/InfluencerDealPage";
 import { InfluencerHome } from "./pages/influencer/InfluencerHome";
+import { MyDeals } from "./pages/influencer/MyDeals";
 import { Landing } from "./pages/landing/Landing";
 import { Login } from "./pages/Login";
 import { Onboarding } from "./pages/Onboarding";
@@ -75,6 +77,8 @@ const router = createBrowserRouter([
     ),
     children: [
       { path: "/influencer", element: <InfluencerHome /> },
+      { path: "/influencer/deals", element: <MyDeals /> },
+      { path: "/influencer/deals/:id", element: <InfluencerDealPage /> },
       { path: "/influencer/agent", element: <AgentPage /> },
       { path: "/influencer/profile", element: <CreatorProfile /> },
     ],

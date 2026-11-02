@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.middleware.sessions import SessionMiddleware
 from web3 import Web3
 
@@ -43,7 +43,21 @@ from ..compliance import DISCLAIMER, campaign_problems
 from ..config import Settings, get_settings
 from ..feedback import FeedbackIn, LessonUpdate, build_feedback, performance_row, performance_summary
 from ..mcp_servers.server import build_mcp
-from ..models import DEFAULT_MAX_ROUNDS, Campaign, CampaignSpec, CompensationModel, ContentCheck, ContentScope, Deal, DealState, RateCard, User, new_id
+from ..models import (
+    CAMPAIGN_NAME_MAX,
+    DEFAULT_MAX_ROUNDS,
+    Campaign,
+    CampaignSpec,
+    CompensationModel,
+    ContentCheck,
+    ContentScope,
+    Deal,
+    DealState,
+    RateCard,
+    User,
+    clean_campaign_name,
+    new_id,
+)
 from ..services.context import AppContext, build_context, chat_model
 from ..services.deals import ADVERTISER_PRIVATE_EVENTS, AUTH_EXPIRED, POLICY_KIND, DealError, DealService
 from ..verifier.channels import summarize
@@ -61,6 +75,7 @@ SHORTS_MAX_SECONDS = 180
 
 
 class CampaignCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=CAMPAIGN_NAME_MAX)  # the advertiser's label; private to them
     advertiser: str = Field(min_length=1, max_length=80)
     brand_handle: str = Field(pattern=r"^@[A-Za-z0-9_.]{2,40}$")
     niche: str = Field(default="fitness", min_length=2, max_length=40)
@@ -85,6 +100,14 @@ class CampaignCreate(BaseModel):
     max_duration_seconds: int = Field(default=0, ge=0, le=4 * 3600)  # 0 = no length rule
     requirements: str = Field(default="", max_length=MAX_REQUIREMENTS_CHARS)
     content_checks: list[ContentCheck] = Field(default_factory=list, max_length=6)  # checked in the video by the content agent
+
+    @field_validator("name")
+    @classmethod
+    def tidy_name(cls, v: str) -> str:
+        v = clean_campaign_name(v)
+        if not v:
+            raise ValueError("give the campaign a name")
+        return v
 
     @model_validator(mode="after")
     def bounds(self) -> CampaignCreate:
@@ -570,12 +593,14 @@ def create_app(
             "escrow": {"address": ctx.escrow.address, "simulated": ctx.escrow.simulated, "chain_id": ctx.escrow.chain_id},
             "token": {"coin": ctx.token.coin, "network": ctx.token.network, "address": ctx.token.contract_address, "decimals": ctx.token.decimals},
             "chain": {
-                "id": ctx.token.chain_id,
-                "name": "HashKey Chain Testnet",
-                "rpc_url": settings.hashkey_testnet_rpc_url,
-                "explorer_url": settings.hashkey_testnet_explorer_url,
-                "currency": "HSK",
+                "id": ctx.chain.id,
+                "name": ctx.chain.name,
+                "rpc_url": ctx.chain.rpc_url,
+                "explorer_url": ctx.chain.explorer_url,
+                "currency": ctx.chain.currency,
             },  # fmt: skip
+            # HSP and the escrow are separate layers: in sepolia mode HSP is not in the payment path at all
+            "hsp_in_payment_path": ctx.gateway.name == "hosted",
             "verifier": ctx.attestor.address,
             "verifier_online": ctx.videos is not None,
             "login_configured": oauth.configured,
@@ -613,7 +638,10 @@ def create_app(
             "disclosure_policies": [p.id for p in policies.values() if p],
             "agent_policy_version": latest["version"] if latest and latest.get("role") == "advertiser" else 0,
         }
-        # A double-click or a retried request carries the same Idempotency-Key: it gets the campaign the first one started
+        # The name is how the advertiser tells campaigns apart, so two of theirs never share one (case and spacing ignored)
+        taken = {c.spec.name.casefold() for c in await state.ctx.store.list_campaigns() if c.spec.owner_id == user.id and c.spec.name}
+        # A double-click or a retried request carries the same Idempotency-Key: it gets the campaign the first one
+        # started. Checked before the duplicate name, which that first request already took.
         key = request.headers.get("idempotency-key", "").strip()[:128]
         spec_id = new_id("CMP")
         if key and (holder := await state.ctx.store.claim("campaign_start", f"{user.id}:{key}", spec_id)) != spec_id:
@@ -622,6 +650,8 @@ def create_app(
                     return existing.model_dump(mode="json")
                 await asyncio.sleep(0.1)
             raise HTTPException(409, "this campaign is already being started")
+        if body.name.casefold() in taken:
+            raise HTTPException(409, f"you already have a campaign named “{body.name}”: pick another name")
         campaign = await state.runner.start(CampaignSpec(**body.model_dump(), **snapshot, id=spec_id, owner_id=user.id, payer=user.wallet))
         return campaign.model_dump(mode="json")
 
@@ -667,6 +697,8 @@ def create_app(
         data["niche"] = data["niche"].strip().lower()[:40]
         data["requirements"] = data["requirements"][:MAX_REQUIREMENTS_CHARS]
         data["brief"] = body.brief
+        # a suggestion only: the form keeps a name the advertiser already typed
+        data["name"] = clean_campaign_name(f"{data['advertiser']} {data['niche']} campaign")[:CAMPAIGN_NAME_MAX] or "New campaign"
         try:
             return CampaignCreate.model_validate(data).model_dump(mode="json")
         except ValidationError as e:

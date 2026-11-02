@@ -31,6 +31,7 @@ from ...agent_policy import screen_creator
 from ...feedback import lessons_for
 from ...models import Deal, DealState, DealTerms, NegotiationReply, Offer, new_id
 from ...services.deals import DealService
+from .. import chat
 from ..influencer.server import NEGOTIATE_SKILL
 from .negotiation import next_move, opening_offer
 
@@ -161,12 +162,16 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
             await emit(system, "negotiation_started", content=f"{us[2]} opened talks with {them[2]}.", max_rounds=spec.max_rounds,
                        compensation_model=spec.compensation_model)  # fmt: skip
             offer = opening_offer(spec, deal.id, policy)
+            offer = offer.model_copy(update={"note": chat.advertiser_opening(spec.advertiser, reg.profile.name, offer, spec.brief)})
             counters: list[Offer] = []
+            intent = "offer"  # what our next message does: open, counter, or accept the creator's counter
             while True:
                 if deals.cancel_requested(deal.id):
                     return await conclude("cancelled", "negotiation_rejected", "Cancelled by the advertiser.", state=DealState.REJECTED,
                                           reason="cancelled by the advertiser")  # fmt: skip
-                sent = await emit(us, "message_completed", content=offer.note or "Offer.", offer=offer, message_id=new_id("MSG"))
+                # offer.note is this round's chat message: the creator's agent receives it with the offer
+                sent = await emit(us, "message_completed", content=offer.note or chat.pay_words(offer), offer=offer, intent=intent,
+                                  message_id=new_id("MSG"))  # fmt: skip
                 await emit(us, "offer_created" if offer.round == 1 else "counter_offer_created", offer=offer, message_id=sent["message_id"])
                 await deals.session_offer(session, offer)
                 await emit(them, "agent_thinking", round=offer.round)
@@ -189,7 +194,7 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
                 if reply.kind == "reject" or reply.offer is None:
                     timeout = offer.round >= spec.max_rounds
                     return await conclude("timeout" if timeout else "rejected", "negotiation_timeout" if timeout else "negotiation_rejected",
-                                          f"{them[2]} declined: {reply.reason}", state=DealState.REJECTED,
+                                          f"No deal: {them[2]} declined.", state=DealState.REJECTED,
                                           reason=f"creator declined: {reply.reason}")  # fmt: skip
                 await emit(them, "counter_offer_created", offer=reply.offer, message_id=answered["message_id"])
                 await deals.session_offer(session, reply.offer)
@@ -206,12 +211,16 @@ def build_advertiser_graph(deals: DealService, checkpointer: BaseCheckpointSaver
                     return await conclude("escalated", "negotiation_rejected", "Paused: the advertiser needs to review this one.",
                                           state=DealState.ESCALATED, reason=f"advertiser review needed: {outcome}")  # fmt: skip
                 if move.action == "walk_away" or move.offer is None:
-                    await emit(us, "message_completed", content=outcome or "Declined.", round=offer.round + 1, reply="reject", message_id=new_id("MSG"))
+                    await emit(us, "message_completed", content=chat.advertiser_walks_away(reg.profile.name, outcome), round=offer.round + 1, reply="reject",
+                               message_id=new_id("MSG"))  # fmt: skip
                     timeout = offer.round >= spec.max_rounds
                     return await conclude("timeout" if timeout else "walked_away", "negotiation_timeout" if timeout else "negotiation_rejected",
                                           "No agreement within the round limit." if timeout else f"{us[2]} walked away.",
                                           state=DealState.REJECTED, reason=outcome)  # fmt: skip
-                offer = move.offer
+                said = (chat.advertiser_accepts(move.offer) if move.action == "accept_counter"
+                        else chat.advertiser_counter(move.offer, offer, last_round=move.offer.round >= spec.max_rounds))  # fmt: skip
+                offer = move.offer.model_copy(update={"note": said})
+                intent = "accept" if move.action == "accept_counter" else "counter"
         except AgentTimeout:
             seconds = ctx.settings.negotiation_reply_timeout_seconds
             await deals.audit(spec.id, deal.id, "advertiser-agent", "negotiation_timeout", seconds=seconds)

@@ -7,12 +7,13 @@ import { ActivityChart, DevClock } from "../../components/CampaignPanels";
 import { LiveNegotiation } from "../../components/LiveNegotiation";
 import { NegotiationQueue, NegotiationSummary, useNegotiationQueue } from "../../components/NegotiationQueue";
 import { DealDetail } from "../../components/DealDetail";
+import { PayoutTransactions } from "../../components/Payments";
 import { Requirements } from "../../components/Requirements";
 import { Timeline } from "../../components/Timeline";
 import { Breadcrumbs } from "../../components/Breadcrumbs";
 import { CreatorLink } from "../../components/CreatorLink";
 import { ActionButton, Address, Avatar, CampaignBadge, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
-import { MODEL_LABEL, humanize, short, usd } from "../../format";
+import { MODEL_LABEL, campaignName, humanize, short, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { useMe, useSession } from "../../session";
 import type { CampaignDetail, CompensationModel, Deal, DirectoryEntry, NegotiationSession, WalletBalance } from "../../types";
@@ -301,6 +302,7 @@ const pendingDeal = (s: NegotiationSession) =>
 export function CampaignView() {
   const { id = "" } = useParams();
   useMe();
+  const { status } = useSession();
   const campaign = useResource(() => api.campaign(id), `c:${id}`);
   const deals = useResource(() => api.campaignDeals(id), `d:${id}`);
   const events = useResource(() => api.campaignEvents(id), `e:${id}`);
@@ -365,10 +367,14 @@ export function CampaignView() {
     <div className="report">
       <header className="report-head">
         <div className="report-title">
-          <Breadcrumbs items={[{ label: "Dashboard", to: "/advertiser" }, { label: "All campaigns", to: "/advertiser/campaigns" }, { label: c.spec.advertiser }]} />
+          <Breadcrumbs items={[{ label: "Dashboard", to: "/advertiser" }, { label: "All campaigns", to: "/advertiser/campaigns" }, { label: campaignName(c.spec) }]} />
           <div className="row">
             <h1>
-              {c.spec.advertiser} <span className="muted">{c.spec.brand_handle}</span>
+              {campaignName(c.spec)}{" "}
+              <span className="muted">
+                {c.spec.name ? `${c.spec.advertiser} ` : ""}
+                {c.spec.brand_handle}
+              </span>
             </h1>
             <CampaignBadge status={c.status} />
             {working && (
@@ -417,11 +423,24 @@ export function CampaignView() {
         <div className="report-main">
           <section className="report-kpis" aria-label="Money">
             <Stat label="Budget" value={usd(c.spec.budget)} />
-            <Stat label="Locked via HSP" value={usd(money.locked)} />
+            <Stat label={status?.hsp_in_payment_path ? "Locked via HSP" : "Deposited in escrow"} value={usd(money.locked)} />
             <Stat label="Paid to creators" value={usd(money.paid)} />
             <Stat label="Refunded" value={usd(money.refunded)} />
-            <Stat label="Still in escrow" value={usd(money.inEscrow)} />
+            <Stat label="Still locked" value={usd(money.inEscrow)} />
           </section>
+          <p className="muted small escrow-where">
+            {status?.escrow.simulated ? (
+              <>
+                <span className="chip warn">simulated escrow</span> an in-process ledger: no tokens move and nothing appears on a block explorer.
+              </>
+            ) : status ? (
+              <>
+                <span className="chip good">{status.chain.name}</span> {status.token.coin} held by escrow contract{" "}
+                <Address value={status.escrow.address} explorer={status.chain.explorer_url} />
+                {!status.hsp_in_payment_path && " · HSP is not in this payment path"}
+              </>
+            ) : null}
+          </p>
 
           <section className="report-card">{events.data ? <ActivityChart events={events.data} deals={list} /> : <Spinner />}</section>
 
@@ -472,6 +491,18 @@ export function CampaignView() {
               </div>
             )}
           </section>
+
+          {list.some((d) => d.payouts.length > 0) && (
+            <section className="report-card">
+              <h2>Payout history</h2>
+              <PayoutTransactions
+                showDeal
+                payouts={list
+                  .flatMap((d) => d.payouts.map((p) => ({ ...p, deal_id: d.id })))
+                  .sort((a, b) => b.at.localeCompare(a.at))}
+              />
+            </section>
+          )}
 
           {deal && (
             <DealDetail

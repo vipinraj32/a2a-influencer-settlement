@@ -3,23 +3,35 @@ from .escrow import (
     Escrow,
     EscrowError,
     OnchainEscrow,
+    Release,
     SimulatedEscrow,
     attestation_digest,
     deal_key,
     recover_attestation_signer,
     tx_key,
 )
+from .sender import BroadcastUnknown, ChainSender, TxRejected, TxResult, TxReverted
 from .settlement import (
     FundingEvidence,
     OnchainSettlementVerifier,
     SettlementMismatch,
     SettlementPending,
+    SettlementReverted,
     SettlementVerifier,
     SimulatedSettlementVerifier,
+    verify_token,
 )
 
 __all__ = [
     "SIMULATED_TX_PREFIX",
+    "BroadcastUnknown",
+    "ChainSender",
+    "Release",
+    "SettlementReverted",
+    "TxRejected",
+    "TxResult",
+    "TxReverted",
+    "verify_token",
     "Escrow",
     "EscrowError",
     "FundingEvidence",

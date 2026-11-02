@@ -15,9 +15,21 @@ export function CampaignBadge({ status }: { status: CampaignStatus }) {
   return <span className={`badge tone-${CAMPAIGN_TONE[status] ?? "neutral"}`}>{humanize(status)}</span>;
 }
 
-export function Card({ title, actions, children, className = "" }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function Card({
+  title,
+  actions,
+  children,
+  className = "",
+  id,
+}: {
+  title?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  id?: string;
+}) {
   return (
-    <section className={`card ${className}`}>
+    <section className={`card ${className}`} id={id}>
       {(title || actions) && (
         <header className="card-head">
           {title && <h2>{title}</h2>}

@@ -33,11 +33,13 @@ class Attestor:
         kind: Literal["fixed", "performance"],
         checks: list[ProofCheck],
         views: int | None = None,
+        nonce: int | None = None,
     ) -> Attestation:
         if not checks or not all(c.passed for c in checks):
             raise ValueError("refusing to attest: not all checks passed")
-        # Random nonce: unique across restarts without persisting a counter
-        nonce = secrets.randbits(64)
+        # One nonce per payout decision. DealService persists it with the decision (PayoutIntent) and reuses it on every
+        # retry, so a release resent after a lost response is the same attestation, which the escrow accepts once.
+        nonce = secrets.randbits(64) if nonce is None else nonce
         evidence = json.dumps({"deal_id": deal_id, "video_id": video_id, "views": views, "checks": [c.model_dump() for c in checks]}, sort_keys=True)
         digest = attestation_digest(self.escrow_address, self.chain_id, deal_id, payee, to_token_units(amount, self.decimals), nonce)
         signature = Account.sign_message(encode_defunct(primitive=digest), private_key=self._key).signature

@@ -15,7 +15,8 @@ const NAV = {
     { to: "/advertiser/agent", label: "My agent", icon: "bot" },
   ],
   influencer: [
-    { to: "/influencer", label: "My deals", icon: "home", end: true },
+    { to: "/influencer", label: "Overview", icon: "home", end: true },
+    { to: "/influencer/deals", label: "My deals", icon: "ledger" },
     { to: "/influencer/agent", label: "My agent", icon: "bot" },
     { to: "/influencer/profile", label: "My profile", icon: "users" },
   ],

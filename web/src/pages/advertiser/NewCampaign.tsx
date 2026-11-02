@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { api } from "../../api";
 import { ContentChecksEditor } from "../../components/ContentChecks";
 import { Card, ErrorText, Notice } from "../../components/ui";
-import { MODEL_LABEL, clock, docSize, usd } from "../../format";
+import { MODEL_LABEL, usd } from "../../format";
 import { useMe, useSession } from "../../session";
 import type { CampaignInput, CompensationModel, ContentScope, Deliverable, DisclosurePolicy } from "../../types";
 
@@ -61,6 +61,7 @@ export function NewCampaign() {
     api.niches().then((r) => setNiches(r.niches), () => setNiches([]));
   }, []);
   const [form, setForm] = useState<CampaignInput>({
+    name: "",
     advertiser: user.company,
     brand_handle: user.brand_handle || "@",
     niche: "fitness",
@@ -98,6 +99,13 @@ export function NewCampaign() {
       })
       .catch(() => setPolicies([]));
   }, []);
+  const [existingNames, setExistingNames] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api.campaigns().then(
+      (cs) => setExistingNames(new Set(cs.filter((c) => c.spec.name).map((c) => c.spec.name.split(/\s+/).filter(Boolean).join(" ").toLowerCase()))),
+      () => setExistingNames(new Set()),
+    );
+  }, []);
   const [busy, setBusy] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +121,9 @@ export function NewCampaign() {
   const model = form.compensation_model;
   const lengthInvalid = form.max_duration_seconds > 0 && form.min_duration_seconds > form.max_duration_seconds;
   const money = (v: string) => (v === "" ? "" : Number(v).toFixed(2));
+  // the server refuses a name the advertiser already used; say so while they type
+  const tidyName = (v: string) => v.split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+  const nameTaken = form.name.trim() !== "" && existingNames.has(tidyName(form.name));
 
   async function draft() {
     setDrafting(true);
@@ -122,6 +133,7 @@ export function NewCampaign() {
       setForm((f) => ({
         ...f,
         ...d,
+        name: f.name.trim() ? f.name : d.name, // the AI only suggests a name when none was typed
         advertiser: f.advertiser || d.advertiser,
         brand_handle: f.brand_handle.length > 1 ? f.brand_handle : d.brand_handle,
         requirements: f.requirements || d.requirements, // never overwrite a document the advertiser wrote
@@ -162,6 +174,10 @@ export function NewCampaign() {
   const submitted = useRef<{ body: string; key: string } | null>(null);
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (nameTaken) {
+      setError("You already have a campaign with this name. Pick another one.");
+      return;
+    }
     if (lengthInvalid) {
       setError("The minimum video length is longer than the maximum.");
       return;
@@ -189,33 +205,44 @@ export function NewCampaign() {
 
   const maxEscrow = Number(form.cap_per_creator || 0) * form.max_creators;
   const lengthCap = form.deliverable === "youtube_short" ? SHORTS_MAX_SECONDS : MAX_VIDEO_SECONDS;
-  const doc = docSize(form.requirements);
 
   return (
     <div className="stack narrow">
       <h1>New campaign</h1>
-      <Card title="Brief">
+      <Card title="Campaign">
         <label className="form">
-          Describe the campaign
+          Campaign name
+          <input
+            form="new-campaign"
+            value={form.name}
+            onChange={(e) => set("name", e.target.value)}
+            required
+            maxLength={80}
+            placeholder="e.g. Diwali protein launch"
+            aria-invalid={nameTaken || undefined}
+          />
+        </label>
+        {nameTaken && <p className="error small">You already have a campaign with this name.</p>}
+        <label className="form">
+          Brief
           <textarea
             rows={3}
             value={form.brief}
             onChange={(e) => set("brief", e.target.value)}
             maxLength={2000}
-            placeholder="Launching a protein snack. Want 3 fitness creators to post a 30s Short with #ad, budget about $120…"
+            placeholder="e.g. 3 fitness creators, 30s Short with #ad, about $120"
           />
         </label>
         <div className="row">
           <button type="button" className="btn btn-secondary" disabled={drafting || form.brief.length < 10 || !status?.llm} onClick={draft}>
             {drafting ? "Drafting…" : "Fill the fields with AI"}
           </button>
-          {!status?.llm && <span className="muted small">Needs ANTHROPIC_API_KEY on the server.</span>}
-          <span className="muted small">The AI only drafts. You review and submit, and the policy engine enforces every limit.</span>
+          {!status?.llm && <span className="muted small">AI is not set up on the server.</span>}
         </div>
       </Card>
 
-      <form onSubmit={submit} className="stack">
-        <Card title="Brand and targeting">
+      <form id="new-campaign" onSubmit={submit} className="stack">
+        <Card title="Brand and creators">
           <div className="grid-3 form">
             <label>
               Brand
@@ -249,7 +276,7 @@ export function NewCampaign() {
           </div>
         </Card>
 
-        <Card title="Content requirements">
+        <Card title="Content">
           <div className="grid-3 form">
             <label>
               Format
@@ -261,13 +288,7 @@ export function NewCampaign() {
             <Duration label="Minimum length" value={form.min_duration_seconds} max={lengthCap} onChange={(v) => set("min_duration_seconds", v)} />
             <Duration label="Maximum length" value={form.max_duration_seconds} max={lengthCap} onChange={(v) => set("max_duration_seconds", v)} />
           </div>
-          <p className={`small ${lengthInvalid ? "error" : "muted"}`}>
-            {lengthInvalid
-              ? "The minimum is longer than the maximum."
-              : form.max_duration_seconds
-                ? `The verifier reads the real length from YouTube and rejects videos outside ${clock(form.min_duration_seconds)} – ${clock(form.max_duration_seconds)}.`
-                : "A maximum of 0:00 accepts any length."}
-          </p>
+          {lengthInvalid && <p className="small error">The minimum is longer than the maximum.</p>}
 
           <div className="form">
             <div className="row spread">
@@ -291,27 +312,21 @@ export function NewCampaign() {
               value={form.requirements}
               onChange={(e) => set("requirements", e.target.value)}
               maxLength={MAX_REQUIREMENTS_CHARS}
-              placeholder="Everything the creator must do: key messages, scenes, things to avoid, tone, disclosure. Usually 1 to 3 pages."
+              placeholder="Key messages, scenes, tone, things to avoid"
             />
-            <div className="row spread small muted">
-              <span>
-                {doc.words.toLocaleString()} words · ~{doc.pages.toFixed(1)} pages
-              </span>
-              <span className={form.requirements.length > MAX_REQUIREMENTS_CHARS * 0.9 ? "error" : ""}>
+            {form.requirements.length > MAX_REQUIREMENTS_CHARS * 0.9 && (
+              <p className="small error">
                 {form.requirements.length.toLocaleString()} / {MAX_REQUIREMENTS_CHARS.toLocaleString()} characters
-              </span>
-            </div>
+              </p>
+            )}
           </div>
           <ContentChecksEditor value={form.content_checks} onChange={(v) => set("content_checks", v)} requirements={form.requirements} brand={form.advertiser} />
-          <Notice>
-            Each influencer agent receives this document and signs its hash in the deal terms, so neither side can change it after the deal.
-          </Notice>
         </Card>
 
-        <Card title="Deal structure and rights">
+        <Card title="Deal terms">
           <div className="grid-3 form">
             <label>
-              Compensation model
+              Payment type
               <select value={model} onChange={(e) => set("compensation_model", e.target.value as CompensationModel)}>
                 {(["hybrid", "fixed", "cpm"] as const).map((m) => (
                   <option key={m} value={m}>
@@ -351,32 +366,26 @@ export function NewCampaign() {
             <label>
               Brand category
               <input value={form.category} maxLength={60} onChange={(e) => set("category", e.target.value)} placeholder="e.g. food & beverage" />
-              <small>Creators can refuse categories they never promote.</small>
             </label>
             <label>
               Negotiation rounds
               <input type="number" min={1} max={8} value={form.max_rounds} onChange={(e) => set("max_rounds", Number(e.target.value))} />
-              <small>No deal is a valid outcome.</small>
             </label>
           </div>
-          <Notice>
-            Rights, exclusivity and revisions are part of the signed terms. Creators' agents may decline or ask for more when the scope goes beyond one organic
-            post; one verifiable post per deal for now.
-          </Notice>
         </Card>
 
-        <Card title="Sponsorship disclosure">
+        <Card title="Disclosure">
           <div className="form">
             <div className="row">
               {policies.map((p) => (
                 <label key={p.jurisdiction} className="check">
                   <input type="checkbox" checked={form.jurisdictions.includes(p.jurisdiction)} onChange={() => toggleJurisdiction(p.jurisdiction)} />
-                  {p.jurisdiction} <span className="muted small">({p.id})</span>
+                  {p.jurisdiction}
                 </label>
               ))}
             </div>
             <label>
-              Required tags (comma separated)
+              Required tags
               <input
                 value={tagsText}
                 onChange={(e) => {
@@ -393,22 +402,27 @@ export function NewCampaign() {
             </label>
             <label className="check">
               <input type="checkbox" checked={form.review_required} onChange={(e) => set("review_required", e.target.checked)} />
-              I review each post's disclosure before the fixed fee is released
+              I review each post before paying
             </label>
           </div>
-          {policies
-            .filter((p) => form.jurisdictions.includes(p.jurisdiction))
-            .map((p) => (
-              <p key={p.id} className="small muted">
-                <strong>{p.jurisdiction}</strong>: approved labels {p.approved_labels.join(", ")}; label in the title or first {p.placement_chars} characters
-                {p.in_video_required ? "; creator confirms an in-video disclosure" : ""}.
-              </p>
-            ))}
           {disclosureProblems.length > 0 && <Notice tone="warn">{disclosureProblems.join(". ")}.</Notice>}
-          {disclaimer && <p className="small muted">{disclaimer}</p>}
+          {form.jurisdictions.length > 0 && (
+            <details className="small muted">
+              <summary>Rules</summary>
+              {policies
+                .filter((p) => form.jurisdictions.includes(p.jurisdiction))
+                .map((p) => (
+                  <p key={p.id}>
+                    <strong>{p.jurisdiction}</strong>: approved labels {p.approved_labels.join(", ")}; label in the title or first {p.placement_chars} characters
+                    {p.in_video_required ? "; creator confirms an in-video disclosure" : ""}.
+                  </p>
+                ))}
+              {disclaimer && <p>{disclaimer}</p>}
+            </details>
+          )}
         </Card>
 
-        <Card title="Money: hard limits your agent cannot exceed">
+        <Card title="Budget">
           <div className="grid-3 form">
             <label>
               Total budget (USD)
@@ -419,15 +433,13 @@ export function NewCampaign() {
               <input type="number" min={1} max={10} value={form.max_creators} onChange={(e) => set("max_creators", Number(e.target.value))} />
             </label>
             <label>
-              Escrow cap per creator (USD)
+              Max per creator (USD)
               <input type="number" min="0.01" step="0.01" value={form.cap_per_creator} onChange={(e) => set("cap_per_creator", e.target.value)} required />
-              <small>Fixed fee + maximum performance fee.</small>
             </label>
             {model !== "cpm" && (
               <label>
                 Max fixed fee (USD)
                 <input type="number" min="0.01" step="0.01" value={form.max_fixed} onChange={(e) => set("max_fixed", e.target.value)} required />
-                {model === "fixed" && <small>The escrow locks exactly the agreed fee.</small>}
               </label>
             )}
             {model !== "fixed" && (
@@ -437,10 +449,7 @@ export function NewCampaign() {
               </label>
             )}
           </div>
-          <Notice>
-            Up to {usd(maxEscrow)} can be locked in escrow ({form.max_creators} × {usd(form.cap_per_creator)}). You sign each Payment Mandate yourself
-            with wallet {user.wallet.slice(0, 8)}…, and unspent money is refunded to that wallet.
-          </Notice>
+          <p className="small muted">Up to {usd(maxEscrow)} in escrow. You sign each payment; unspent money returns to your wallet.</p>
         </Card>
 
         <div className="row">

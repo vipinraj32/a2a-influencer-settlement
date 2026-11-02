@@ -3,7 +3,9 @@ happened; a deal is FUNDED only after the settlement transaction itself proves a
 right token from the payer into the escrow.
 
 `OnchainSettlementVerifier` reads the transaction receipt from HashKey Chain. `SimulatedSettlementVerifier`
-reads the receipts `SimulatedEscrow` records, and every result it returns is marked simulated."""
+reads the receipts `SimulatedEscrow` records, and every result it returns is marked simulated.
+
+`verify_token` checks, at startup, that the configured token is what the configuration says it is."""
 
 from __future__ import annotations
 
@@ -32,6 +34,10 @@ class SettlementPending(Exception):
 
 class SettlementMismatch(Exception):
     """The transaction exists but does not prove this payment (reverted, wrong token/payer/payee/amount)."""
+
+
+class SettlementReverted(SettlementMismatch):
+    """The transaction failed on chain: it moved no tokens."""
 
 
 @dataclass(frozen=True)
@@ -77,10 +83,10 @@ def find_transfer(logs: list[Any], token: str, payer: str, escrow: str, value_un
 class OnchainSettlementVerifier:
     simulated = False
 
-    def __init__(self, rpc_url: str, token: str, chain_id: int, min_confirmations: int = 1) -> None:
+    def __init__(self, rpc_url: str, token: str, chain_id: int, min_confirmations: int = 1, *, w3: Any = None) -> None:
         from web3 import Web3
 
-        self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
+        self.w3 = w3 or Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
         self.token = to_checksum_address(token)
         self.chain_id = chain_id
         self.min_confirmations = max(1, min_confirmations)
@@ -96,7 +102,7 @@ class OnchainSettlementVerifier:
         except TransactionNotFound:
             raise SettlementPending("settlement transaction not found on chain yet") from None
         if receipt["status"] != 1:
-            raise SettlementMismatch("settlement transaction reverted")
+            raise SettlementReverted("settlement transaction reverted")
         confirmations = self.w3.eth.block_number - receipt["blockNumber"] + 1
         if confirmations < self.min_confirmations:
             raise SettlementPending(f"{confirmations}/{self.min_confirmations} confirmations")
@@ -134,3 +140,45 @@ class SimulatedSettlementVerifier:
 
     def authorization_used(self, payer: str, nonce: str) -> bool:
         return any(r["from"] == to_checksum_address(payer) and r["nonce"] == nonce.lower() for r in self.escrow.settlements.values())
+
+
+TOKEN_ABI = [
+    *AUTHORIZATION_STATE_ABI,
+    *({"name": n, "type": "function", "stateMutability": "view", "inputs": [], "outputs": [{"name": "", "type": t}]}
+      for n, t in (("name", "string"), ("version", "string"), ("decimals", "uint8"), ("DOMAIN_SEPARATOR", "bytes32"))),
+]  # fmt: skip
+
+
+def verify_token(w3: Any, token: Any) -> None:
+    """Fails closed unless the contract at `token.contract_address` is an EIP-3009 token on the expected chain with
+    the expected decimals and EIP-712 domain: a look-alike token, or a wrong domain that would make every payment
+    signature invalid, stops the server at startup instead of at the first payment."""
+    from eth_abi import encode
+
+    problems: list[str] = []
+    if w3.eth.chain_id != token.chain_id:
+        problems.append(f"RPC is chain {w3.eth.chain_id}, expected {token.chain_id}")
+    elif not w3.eth.get_code(token.contract_address):
+        problems.append(f"no contract at {token.contract_address}")
+    else:
+        c = w3.eth.contract(address=to_checksum_address(token.contract_address), abi=TOKEN_ABI)
+        try:
+            decimals = c.functions.decimals().call()
+            name, version = c.functions.name().call(), c.functions.version().call()
+            separator = bytes(c.functions.DOMAIN_SEPARATOR().call())
+            c.functions.authorizationState(to_checksum_address(token.contract_address), b"\0" * 32).call()
+        except Exception as e:  # noqa: BLE001 - any missing function means it is not the token we expect
+            problems.append(f"not an EIP-3009 token ({type(e).__name__})")
+        else:
+            if decimals != token.decimals:
+                problems.append(f"decimals() is {decimals}, expected {token.decimals}")
+            if (name, version) != (token.domain_name, token.domain_version):
+                problems.append(f"EIP-712 domain is {name!r} v{version}, expected {token.domain_name!r} v{token.domain_version}")
+            domain_type = keccak(text="EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+            mine = keccak(encode(["bytes32", "bytes32", "bytes32", "uint256", "address"],
+                                 [domain_type, keccak(text=token.domain_name), keccak(text=token.domain_version), token.chain_id,
+                                  to_checksum_address(token.contract_address)]))  # fmt: skip
+            if separator != mine:
+                problems.append("DOMAIN_SEPARATOR does not match the configured domain")
+    if problems:
+        raise SettlementMismatch(f"{token.coin} on {token.network} does not match the configuration: " + "; ".join(problems))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import httpx
 from eth_account import Account
@@ -17,7 +18,8 @@ from langchain_core.language_models import BaseChatModel
 from ..agents.a2a_client import A2AConnector
 from ..chain.balances import BalanceReader, RpcBalanceReader
 from ..chain.escrow import Escrow, OnchainEscrow, SimulatedEscrow
-from ..chain.settlement import OnchainSettlementVerifier, SettlementVerifier, SimulatedSettlementVerifier
+from ..chain.sender import ChainSender
+from ..chain.settlement import OnchainSettlementVerifier, SettlementVerifier, SimulatedSettlementVerifier, verify_token
 from ..clock import Clock
 from ..compliance import DisclosureRegistry
 from ..config import Settings, SettlementMode
@@ -28,9 +30,24 @@ from ..verifier.attest import Attestor
 from ..verifier.channels import ChannelSource, YouTubeChannelApi
 from ..verifier.content import CaptionSource, FrameSource, YouTubeCaptions, YouTubeFrames
 from ..verifier.youtube import VideoSource, YouTubeDataApi
-from ..wallet.gateway import Gateway, HostedGateway, SimulatedGateway
+from ..wallet.gateway import ChainGateway, Gateway, HostedGateway, SimulatedGateway
 from .events import EventBus
 from .registry import InfluencerRegistry
+
+
+@dataclass(frozen=True)
+class ChainInfo:
+    """The chain payments settle on, as the browser needs it (wallet network switch, explorer links)."""
+
+    id: int
+    name: str
+    rpc_url: str
+    explorer_url: str
+    currency: str
+
+
+HASHKEY_TESTNET = "HashKey Chain Testnet"
+SEPOLIA = "Ethereum Sepolia"
 
 
 @dataclass
@@ -54,6 +71,7 @@ class AppContext:
     frames: FrameSource | None = None  # content agent: frames YouTube publishes for a posted video
     bus: EventBus = field(default_factory=EventBus)
     warnings: list[str] = field(default_factory=list)
+    chain: ChainInfo = field(default_factory=lambda: ChainInfo(133, HASHKEY_TESTNET, "", "", "HSK"))
 
 
 def chat_model(settings: Settings) -> BaseChatModel | None:
@@ -77,6 +95,46 @@ def hosted_mode_missing(settings: Settings) -> list[str]:
     if not Path(settings.hsp_merchant_private_key_path).is_file():
         missing.append(f"HSP merchant key file ({settings.hsp_merchant_private_key_path})")
     return missing
+
+
+def chain_info(settings: Settings, chain_id: int) -> ChainInfo:
+    """What /api/status tells the browser. That endpoint is public: in sepolia mode the wallet gets the public RPC,
+    never SEPOLIA_RPC_URL, which may carry a provider API key."""
+    if settings.settlement_mode == SettlementMode.SEPOLIA:
+        return ChainInfo(chain_id, SEPOLIA, settings.sepolia_public_rpc_url, settings.sepolia_explorer_url, "ETH")
+    return ChainInfo(chain_id, HASHKEY_TESTNET, settings.hashkey_testnet_rpc_url, settings.hashkey_testnet_explorer_url, "HSK")
+
+
+def sepolia_mode_missing(settings: Settings) -> list[str]:
+    """Configuration PAYMENT_MODE=sepolia cannot run without (no HSP credentials: HSP is not in this path)."""
+    required = {
+        "SEPOLIA_RPC_URL": settings.sepolia_rpc_url,
+        "ESCROW_ADDRESS": settings.escrow_address,
+        "OPERATOR_PRIVATE_KEY": settings.operator_private_key,  # pays gas; must be the escrow's operator
+        "VERIFIER_PRIVATE_KEY": settings.verifier_private_key,  # must be the escrow's verifier
+    }
+    return [name for name, value in required.items() if not value]
+
+
+SepoliaBackends = tuple[TokenInfo, OnchainEscrow, ChainGateway, OnchainSettlementVerifier]
+
+
+def build_sepolia(settings: Settings, verifier_key: str, clock: Clock, w3: Any = None, token: TokenInfo | None = None) -> SepoliaBackends:
+    """Real test USDC on Ethereum Sepolia. Fails closed: the token must be Circle's documented test USDC with its
+    exact EIP-712 domain, and the escrow must be deployed with this operator, verifier and token."""
+    from web3 import Web3
+
+    missing = sepolia_mode_missing(settings)
+    if missing:
+        raise RuntimeError("PAYMENT_MODE=sepolia is unavailable, missing: " + ", ".join(missing))
+    token = token or find_token("sepolia", "USDC")  # an override is for local test chains only; the app never passes one
+    w3 = w3 or Web3(Web3.HTTPProvider(settings.sepolia_rpc_url, request_kwargs={"timeout": 30}))
+    verify_token(w3, token)
+    sender = ChainSender(w3, settings.operator_private_key)
+    escrow = OnchainEscrow("", settings.escrow_address, settings.operator_private_key, token.contract_address, sender=sender)
+    escrow.verify_deployment(token.chain_id, Account.from_key(verifier_key).address)
+    settlement = OnchainSettlementVerifier("", token.contract_address, token.chain_id, settings.settlement_min_confirmations, w3=w3)
+    return token, escrow, ChainGateway(token, sender, clock), settlement
 
 
 async def build_context(
@@ -108,7 +166,12 @@ async def build_context(
     escrow: Escrow
     gateway: Gateway
     settlement: SettlementVerifier
-    if settings.settlement_mode == SettlementMode.HOSTED:
+    if settings.settlement_mode == SettlementMode.SEPOLIA:
+        if not settings.verifier_private_key:
+            raise RuntimeError("PAYMENT_MODE=sepolia is unavailable, missing: VERIFIER_PRIVATE_KEY")
+        token, escrow, gateway, settlement = build_sepolia(settings, verifier_key, clock)
+        warnings.append("PAYMENT_MODE=sepolia: real test USDC on Ethereum Sepolia; HSP is not in this payment path")
+    elif settings.settlement_mode == SettlementMode.HOSTED:
         # Real money: fail closed on anything missing, and never fall back to simulation
         missing = hosted_mode_missing(settings)
         if missing:
@@ -148,7 +211,9 @@ async def build_context(
         escrow=escrow,
         gateway=gateway,
         settlement=settlement,
-        balances=RpcBalanceReader(settings.hashkey_testnet_rpc_url, token.contract_address),
+        balances=RpcBalanceReader(
+            settings.sepolia_rpc_url if settings.settlement_mode == SettlementMode.SEPOLIA else settings.hashkey_testnet_rpc_url, token.contract_address
+        ),  # fmt: skip
         attestor=Attestor(verifier_key, escrow.address, escrow.chain_id, token.decimals),
         videos=videos,
         a2a=A2AConnector(a2a_http or httpx.AsyncClient(timeout=60)),
@@ -159,6 +224,7 @@ async def build_context(
         captions=YouTubeCaptions(),
         frames=YouTubeFrames(),
         warnings=warnings,
+        chain=chain_info(settings, token.chain_id),
     )
     await ctx.disclosure.load()
     ctx.settings = settings.model_copy(update={"session_secret": secret})

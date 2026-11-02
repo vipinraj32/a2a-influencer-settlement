@@ -8,20 +8,29 @@ verification path. Nothing it does moves real tokens.
 `HostedGateway` is the real HSP merchant API. HSP's payer-side submission is not publicly documented,
 so the advertiser signs in HSP's hosted checkout (`payment_url`) and the webhook reports the payment.
 
+`ChainGateway` (PAYMENT_MODE=sepolia) is not HSP: it runs the same checks HSP must run on the signed Payment
+Mandate, then relays the advertiser's EIP-3009 authorization to the token contract itself
+(`transferWithAuthorization`, paid for by the operator key), which moves real test USDC from the advertiser's
+wallet into the escrow. There is no webhook: the transaction hash is the only claim, and it is verified like any other.
+
 Neither gateway's word is proof of payment: DealService verifies the settlement transaction itself
 (chain/settlement.py) before a deal is FUNDED.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import httpx
+from eth_utils import to_checksum_address
 from pydantic import BaseModel
 
 from ..chain.escrow import SimulatedEscrow
+from ..chain.sender import BroadcastUnknown, ChainSender, TxRejected
 from ..clock import Clock
 from ..hsp.cart import cart_method, cart_total
 from ..hsp.client import HspApiError, HspClient
@@ -32,6 +41,46 @@ from .signer import PaymentMandate, recover_payment_mandate_signer, to_token_uni
 WebhookSink = Callable[[bytes, str], Awaitable[None]]
 
 SIMULATED_APP_SECRET = "zyroxq-simulated-gateway-secret"
+
+
+TRANSFER_WITH_AUTHORIZATION_ABI = [
+    {
+        "name": "transferWithAuthorization",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "from", "type": "address"},
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "validAfter", "type": "uint256"},
+            {"name": "validBefore", "type": "uint256"},
+            {"name": "nonce", "type": "bytes32"},
+            {"name": "v", "type": "uint8"},
+            {"name": "r", "type": "bytes32"},
+            {"name": "s", "type": "bytes32"},
+        ],
+        "outputs": [],
+    }
+]
+
+
+def verify_mandate(mandate: PaymentMandate, contents: dict[str, Any], token: TokenInfo, now: int, used_nonces: set[str]) -> None:
+    """What the gateway must check before it moves money: the right cart, payee, amount, window and signer."""
+    auth = mandate.authorization
+    method = cart_method(contents)
+    checks = [
+        (mandate.cart_mandate_id == contents["id"], "mandate references another cart"),
+        (auth["to"].lower() == method["pay_to"].lower(), "authorization payee differs from cart pay_to"),
+        (int(auth["value"]) == to_token_units(cart_total(contents), token.decimals), "authorized amount differs from cart total"),
+        (int(auth["validAfter"]) <= now < int(auth["validBefore"]), "authorization outside its validity window"),
+        (auth["nonce"] not in used_nonces, "authorization nonce already used"),
+    ]
+    for ok, reason in checks:
+        if not ok:
+            raise GatewayRejected(reason)
+    signer = recover_payment_mandate_signer(mandate, token)
+    if signer.lower() != auth["from"].lower() or signer.lower() != mandate.payer.lower():
+        raise GatewayRejected("signature does not match payer")
 
 
 class OrderResult(BaseModel):
@@ -46,6 +95,10 @@ class GatewayRejected(Exception):
 class GatewayUnavailable(Exception):
     """Timeout, transport error or server error: the payment may or may not have gone through."""
 
+    def __init__(self, message: str, tx_hash: str | None = None) -> None:
+        super().__init__(message)
+        self.tx_hash = tx_hash  # set when the transaction was signed (so its hash is known) but its broadcast is unconfirmed
+
 
 class PaymentLookup(BaseModel):
     """What the gateway reports about a payment request. A claim to verify, not evidence."""
@@ -59,10 +112,11 @@ class Gateway(Protocol):
     name: str
     simulated: bool
     agent_signing: bool  # True → the advertiser's wallet signs the mandate here and we submit it
+    direct_onchain: bool  # True → no gateway reports back: the submitted transaction hash is the only claim
     webhook_secret: str
 
     async def create_order(self, contents: dict[str, Any]) -> OrderResult: ...
-    async def submit_payment_mandate(self, mandate: PaymentMandate) -> str: ...
+    async def submit_payment_mandate(self, mandate: PaymentMandate, contents: dict[str, Any] | None = None) -> str: ...
     async def lookup_payment(self, payment_request_id: str) -> PaymentLookup | None:
         """None when the gateway has no record (yet). Raises GatewayUnavailable when it cannot be asked."""
         ...
@@ -72,6 +126,7 @@ class SimulatedGateway:
     name = "simulated"
     simulated = True
     agent_signing = True
+    direct_onchain = False
     webhook_secret = SIMULATED_APP_SECRET
 
     def __init__(self, token: TokenInfo, escrow: SimulatedEscrow, clock: Clock, base_url: str) -> None:
@@ -91,7 +146,7 @@ class SimulatedGateway:
         self._carts[prid] = contents
         return OrderResult(payment_request_id=prid, payment_url=f"{self.base_url}/checkout/simulated/{prid}")
 
-    async def submit_payment_mandate(self, mandate: PaymentMandate) -> str:
+    async def submit_payment_mandate(self, mandate: PaymentMandate, contents: dict[str, Any] | None = None) -> str:
         contents = self._carts.get(mandate.payment_mandate_id)
         if contents is None:
             raise GatewayRejected("unknown payment_request_id")
@@ -109,22 +164,7 @@ class SimulatedGateway:
         return self._payments.get(payment_request_id)
 
     def _verify(self, mandate: PaymentMandate, contents: dict[str, Any]) -> None:
-        auth = mandate.authorization
-        method = cart_method(contents)
-        now = int(self.clock.now().timestamp())
-        checks = [
-            (mandate.cart_mandate_id == contents["id"], "mandate references another cart"),
-            (auth["to"].lower() == method["pay_to"].lower(), "authorization payee differs from cart pay_to"),
-            (int(auth["value"]) == to_token_units(cart_total(contents), self.token.decimals), "authorized amount differs from cart total"),
-            (int(auth["validAfter"]) <= now < int(auth["validBefore"]), "authorization outside its validity window"),
-            (auth["nonce"] not in self._used_nonces, "authorization nonce already used"),
-        ]
-        for ok, reason in checks:
-            if not ok:
-                raise GatewayRejected(reason)
-        signer = recover_payment_mandate_signer(mandate, self.token)
-        if signer.lower() != auth["from"].lower() or signer.lower() != mandate.payer.lower():
-            raise GatewayRejected("signature does not match payer")
+        verify_mandate(mandate, contents, self.token, int(self.clock.now().timestamp()), self._used_nonces)
 
     async def _emit(self, contents: dict[str, Any], mandate: PaymentMandate, status: str, tx: str) -> None:
         if self.sink is None:
@@ -153,10 +193,59 @@ class SimulatedGateway:
         await self.sink(raw, sign_webhook(raw, self.webhook_secret, ts=int(self.clock.now().timestamp())))
 
 
+class ChainGateway:
+    """PAYMENT_MODE=sepolia: verifies the signed Payment Mandate like HSP would, then submits the EIP-3009
+    authorization to the token on chain. Real test USDC moves from the advertiser's wallet to the escrow; the
+    operator only pays gas and can neither change the amount nor the recipient (both are signed)."""
+
+    name = "sepolia"
+    simulated = False
+    agent_signing = True
+    direct_onchain = True
+
+    def __init__(self, token: TokenInfo, sender: ChainSender, clock: Clock) -> None:
+        self.token = token
+        self.sender = sender
+        self.clock = clock
+        self.webhook_secret = secrets.token_hex(32)  # nothing sends webhooks in this mode: every signature fails
+        self.contract = sender.w3.eth.contract(address=to_checksum_address(token.contract_address), abi=TRANSFER_WITH_AUTHORIZATION_ABI)
+        self._payments: dict[str, PaymentLookup] = {}
+
+    async def create_order(self, contents: dict[str, Any]) -> OrderResult:
+        prid = contents["payment_request"]["details"]["id"]
+        return OrderResult(payment_request_id=prid, payment_url="")
+
+    async def submit_payment_mandate(self, mandate: PaymentMandate, contents: dict[str, Any] | None = None) -> str:
+        if contents is None:
+            raise GatewayRejected("the Cart Mandate is required to check the authorization")
+        # the token rejects a reused nonce itself; DealService also claims each nonce once
+        verify_mandate(mandate, contents, self.token, int(self.clock.now().timestamp()), set())
+        auth = mandate.authorization
+        sig = bytes.fromhex(mandate.x402["payload"]["signature"].removeprefix("0x"))
+        v, r, s_ = sig[64] if sig[64] >= 27 else sig[64] + 27, sig[:32], sig[32:64]
+        fn = self.contract.functions.transferWithAuthorization(
+            to_checksum_address(auth["from"]), to_checksum_address(auth["to"]), int(auth["value"]), int(auth["validAfter"]),
+            int(auth["validBefore"]), bytes.fromhex(auth["nonce"].removeprefix("0x")), v, r, s_,
+        )  # fmt: skip
+        try:
+            tx = await asyncio.to_thread(self.sender.submit, fn)
+        except TxRejected as e:  # the token would refuse it (balance, signature, used nonce): nothing was sent
+            raise GatewayRejected(f"the token refused the authorization: {e}") from e
+        except BroadcastUnknown as e:
+            raise GatewayUnavailable(f"broadcast unconfirmed: {e}", tx_hash=e.tx_hash) from e
+        self._payments[mandate.payment_mandate_id] = PaymentLookup(status="payment-included", tx_hash=tx, payer=mandate.payer)
+        return tx
+
+    async def lookup_payment(self, payment_request_id: str) -> PaymentLookup | None:
+        # Only this process's own submissions; after a restart the payment attempt's tx hash is checked on chain instead
+        return self._payments.get(payment_request_id)
+
+
 class HostedGateway:
     name = "hosted"
     simulated = False
     agent_signing = False
+    direct_onchain = False
 
     def __init__(self, client: HspClient, redirect_url: str | None = None) -> None:
         self.client = client
@@ -167,7 +256,7 @@ class HostedGateway:
         data = await self.client.create_order(contents, self.redirect_url)
         return OrderResult(payment_request_id=data["payment_request_id"], payment_url=data["payment_url"])
 
-    async def submit_payment_mandate(self, mandate: PaymentMandate) -> str:
+    async def submit_payment_mandate(self, mandate: PaymentMandate, contents: dict[str, Any] | None = None) -> str:
         # Blocked on HashKey: the payer-side endpoint (/api/v1/payment/pay-mandate) and its payload are not
         # documented, so a browser-signed authorization cannot be submitted. Never reached: agent_signing is False.
         raise GatewayRejected("HSP payer-side submission is not public: sign in the hosted checkout (payment_url)")

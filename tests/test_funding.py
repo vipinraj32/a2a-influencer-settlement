@@ -103,7 +103,7 @@ async def test_valid_authorization_funds_escrow_after_verified_settlement(svc, i
 class FailingTransferGateway(SimulatedGateway):
     """HSP accepts the mandate but the token transfer fails on chain (e.g. an empty wallet)."""
 
-    async def submit_payment_mandate(self, mandate):
+    async def submit_payment_mandate(self, mandate, contents=None):
         contents = self._carts[mandate.payment_mandate_id]
         self._verify(mandate, contents)
         await self._emit(contents, mandate, "payment-failed", "0x" + "fa" * 32)
@@ -132,7 +132,7 @@ async def test_empty_wallet_transfer_failure_never_funds(svc, influencer):
 
 async def test_hsp_rejection_fails_the_attempt(svc, influencer):
     class Rejecting(SimulatedGateway):
-        async def submit_payment_mandate(self, mandate):
+        async def submit_payment_mandate(self, mandate, contents=None):
             raise GatewayRejected("10010 insufficient balance")
 
     use_gateway(svc, Rejecting)
@@ -299,7 +299,7 @@ async def test_declined_or_failed_deals_release_their_budget(svc, influencer):
 class LostResponseGateway(SimulatedGateway):
     """HSP settles the transfer, but our request times out before the response (or webhook) arrives."""
 
-    async def submit_payment_mandate(self, mandate):
+    async def submit_payment_mandate(self, mandate, contents=None):
         contents = self._carts[mandate.payment_mandate_id]
         self._verify(mandate, contents)
         auth = mandate.authorization
@@ -321,7 +321,7 @@ async def test_timeout_is_unknown_then_reconciled_without_resigning(svc, influen
 
 async def test_slow_gateway_times_out_as_unknown(svc, influencer):
     class Slow(SimulatedGateway):
-        async def submit_payment_mandate(self, mandate):
+        async def submit_payment_mandate(self, mandate, contents=None):
             await asyncio.sleep(5)
 
     use_gateway(svc, Slow)
@@ -331,7 +331,7 @@ async def test_slow_gateway_times_out_as_unknown(svc, influencer):
 
 async def test_unknown_payment_fails_only_once_the_authorization_provably_expired_unused(svc, influencer):
     class Unreachable(SimulatedGateway):
-        async def submit_payment_mandate(self, mandate):
+        async def submit_payment_mandate(self, mandate, contents=None):
             raise GatewayUnavailable("502 bad gateway")
 
     use_gateway(svc, Unreachable)
@@ -378,7 +378,7 @@ class ClaimsSuccessGateway(SimulatedGateway):
 
     tx = "0x" + "c1" * 32
 
-    async def submit_payment_mandate(self, mandate):
+    async def submit_payment_mandate(self, mandate, contents=None):
         contents = self._carts[mandate.payment_mandate_id]
         self._verify(mandate, contents)
         await self._emit(contents, mandate, "payment-finalized", self.tx)
@@ -512,7 +512,8 @@ async def test_verified_proof_pays_out_once_and_refunds_the_rest(svc, influencer
     videos.add(VideoInfo(video_id="abcdefghijk", channel_id=influencer.channel_id, title="t", description="@fitfuel #ad",
                          published_at=svc.ctx.clock.now(), privacy_status="public", views=0, duration_seconds=30), week_one_views=4_000)  # fmt: skip
     deal = await svc.submit_proof(deal.id, "https://youtube.com/shorts/abcdefghijk")
-    assert deal.state == DealState.VERIFIED, deal.proof
+    assert deal.state == DealState.FIXED_RELEASED, deal.proof  # verified → fixed fee paid at once
+    assert [(p.kind, p.amount) for p in deal.payouts] == [("fixed", Decimal("20"))]
     for _ in range(3):  # extra ticks must not pay twice
         svc.ctx.clock.advance(timedelta(days=4))
         await svc.tick()
@@ -522,6 +523,20 @@ async def test_verified_proof_pays_out_once_and_refunds_the_rest(svc, influencer
     assert kinds == {"fixed": Decimal("20"), "performance": Decimal("10.00"), "refund": Decimal("10")}
     assert all(p.simulated for p in deal.payouts)
     assert svc.ctx.escrow.balance == 0 and svc.ctx.escrow.allocated == 0  # type: ignore[attr-defined]
+
+
+async def test_instant_release_racing_the_scheduler_pays_once(svc, influencer):
+    videos = FixtureVideoSource(svc.ctx.clock.now)
+    svc.ctx.videos = videos
+    deal = await new_deal(svc, influencer, 1)
+    deal = await svc.submit_payment(deal, sign(svc, deal))
+    videos.add(VideoInfo(video_id="abcdefghijk", channel_id=influencer.channel_id, title="t", description="@fitfuel #ad",
+                         published_at=svc.ctx.clock.now(), privacy_status="public", views=0, duration_seconds=30))  # fmt: skip
+    # the proof's own release and the scheduler see the same VERIFIED deal: only one of them may attest and pay
+    await asyncio.gather(svc.submit_proof(deal.id, "https://youtube.com/shorts/abcdefghijk"), *(svc.tick() for _ in range(3)))
+    deal = await svc.get(deal.id)
+    assert deal.state == DealState.FIXED_RELEASED
+    assert [p.kind for p in deal.payouts] == ["fixed"] and len([a for a in deal.attestations if a.kind == "fixed"]) == 1
 
 
 async def test_unproven_deal_is_refunded_after_deadline(svc, influencer):

@@ -1,5 +1,5 @@
 """Escrow backends with identical rules: `SimulatedEscrow` (in-process ledger) and `OnchainEscrow`
-(CampaignEscrow.sol on HashKey Chain). Change both together with the contract.
+(CampaignEscrow.sol on HashKey Chain Testnet or Ethereum Sepolia). Change both together with the contract.
 
 Funding is attributed explicitly: `mark_funded(deal, funding_tx)` binds one verified settlement
 transaction to one deal (never reusable), and the unallocated balance must still cover the cap."""
@@ -17,6 +17,8 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from eth_utils import keccak, to_checksum_address
 
+from .sender import BroadcastUnknown, ChainSender, TxRejected, TxReverted
+
 ARTIFACT = Path(__file__).resolve().parents[3] / "contracts" / "build" / "CampaignEscrow.json"
 # Simulated transaction hashes are 32 bytes like real ones and always start with 0x5111 ("sim")
 SIMULATED_TX_PREFIX = "0x5111"
@@ -24,6 +26,21 @@ SIMULATED_TX_PREFIX = "0x5111"
 
 class EscrowError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class Release:
+    """A payout the escrow made, as its Released event records it."""
+
+    tx_hash: str
+    block_number: int | None
+    amount_units: int
+    payee: str
+
+
+def hex_tx(value: Any) -> str:
+    h = value.hex() if hasattr(value, "hex") else str(value)
+    return "0x" + h.removeprefix("0x")
 
 
 def deal_key(deal_id: str) -> bytes:
@@ -66,6 +83,10 @@ class Escrow(Protocol):
     def close(self, deal_id: str) -> tuple[str, int]: ...
     def refund_expired(self, deal_id: str, now: int) -> tuple[str, int]: ...
     def get_deal(self, deal_id: str) -> dict[str, Any]: ...
+    def block_number(self) -> int: ...
+    def tx_block(self, tx_hash: str) -> int | None: ...
+    def find_release(self, deal_id: str, nonce: int, from_block: int) -> Release | None: ...
+    def find_refund(self, deal_id: str, from_block: int) -> Release | None: ...
 
 
 @dataclass
@@ -97,6 +118,8 @@ class SimulatedEscrow:
         self._deals: dict[str, _SimDeal] = {}
         self._used: set[bytes] = set()
         self._used_funding: set[bytes] = set()
+        self._releases: list[tuple[str, int, Release]] = []  # (deal id, nonce, release), like Released events
+        self._refunds: dict[str, Release] = {}  # deal id -> refund, like Refunded events
 
     @staticmethod
     def _tx() -> str:
@@ -140,7 +163,9 @@ class SimulatedEscrow:
         self._used.add(digest)
         d.released += amount_units
         self._pay(d.payee, amount_units)
-        return self._tx()
+        tx = self._tx()
+        self._releases.append((deal_id, nonce, Release(tx, None, amount_units, d.payee)))
+        return tx
 
     def close(self, deal_id: str) -> tuple[str, int]:
         return self._refund_remainder(deal_id)
@@ -155,6 +180,18 @@ class SimulatedEscrow:
         d = self._deals.get(deal_id)
         return {} if d is None else d.__dict__.copy()
 
+    def block_number(self) -> int:
+        return 0
+
+    def tx_block(self, tx_hash: str) -> int | None:
+        return None  # a ledger entry, not a block
+
+    def find_release(self, deal_id: str, nonce: int, from_block: int) -> Release | None:
+        return next((r for d, n, r in self._releases if d == deal_id and n == nonce), None)
+
+    def find_refund(self, deal_id: str, from_block: int) -> Release | None:
+        return self._refunds.get(deal_id)
+
     def _refund_remainder(self, deal_id: str) -> tuple[str, int]:
         d = self._require(deal_id, "Funded")
         remaining = d.cap - d.released
@@ -163,7 +200,9 @@ class SimulatedEscrow:
         if remaining:
             self.balance -= remaining
             self.transfers.append({"to": d.advertiser, "units": remaining})
-        return self._tx(), remaining
+        tx = self._tx()
+        self._refunds[deal_id] = Release(tx, None, remaining, d.advertiser)
+        return tx, remaining
 
     def _pay(self, to: str, units: int) -> None:
         self.allocated -= units
@@ -178,21 +217,25 @@ class SimulatedEscrow:
 
 
 class OnchainEscrow:
-    """CampaignEscrow.sol via web3. The operator key pays gas and sends every transaction."""
+    """CampaignEscrow.sol via web3. The operator key pays gas and sends every transaction, through a ChainSender
+    shared with anything else that sends from that key."""
 
     simulated = False
     _STATES = ["None", "Registered", "Funded", "Disputed", "Closed"]
 
-    def __init__(self, rpc_url: str, address: str, operator_private_key: str, token_address: str) -> None:
+    def __init__(self, rpc_url: str, address: str, operator_private_key: str, token_address: str, *, w3: Any = None,
+                 sender: ChainSender | None = None) -> None:  # fmt: skip
         from web3 import Web3
 
-        self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
+        self.w3 = w3 or (sender.w3 if sender else Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30})))
         artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.address = to_checksum_address(address)
         self.contract = self.w3.eth.contract(address=self.address, abi=artifact["abi"])
-        self.account = Account.from_key(operator_private_key)
+        self.sender = sender or ChainSender(self.w3, operator_private_key)
+        self.account = self.sender.account
         self.chain_id = self.w3.eth.chain_id
         self.token = to_checksum_address(token_address)
+        self._blocks: dict[str, int] = {}  # tx hash -> block, for transactions this process sent
 
     def verify_deployment(self, expected_chain_id: int, verifier: str) -> None:
         """Fails closed at startup unless the RPC, the contract and the keys all match the configuration."""
@@ -211,13 +254,14 @@ class OnchainEscrow:
             raise EscrowError("escrow deployment does not match the configuration: " + "; ".join(problems))
 
     def _send(self, fn: Any) -> str:
-        tx = fn.build_transaction({"from": self.account.address, "nonce": self.w3.eth.get_transaction_count(self.account.address), "chainId": self.chain_id})
-        signed = self.account.sign_transaction(tx)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        if receipt["status"] != 1:
-            raise EscrowError(f"transaction reverted: {tx_hash.hex()}")
-        return "0x" + tx_hash.hex().removeprefix("0x")
+        from web3.exceptions import TimeExhausted
+
+        try:
+            result = self.sender.send(fn)
+        except (TxRejected, TxReverted, BroadcastUnknown, TimeExhausted) as e:
+            raise EscrowError(str(e)) from e
+        self._blocks[result.tx_hash.lower()] = result.block_number
+        return result.tx_hash
 
     def register_deal(self, deal_id: str, advertiser: str, payee: str, cap_units: int, proof_deadline: int) -> str:
         fn = self.contract.functions.registerDeal(deal_key(deal_id), to_checksum_address(advertiser), to_checksum_address(payee), cap_units, proof_deadline)
@@ -241,6 +285,33 @@ class OnchainEscrow:
         advertiser, payee, cap, released, deadline, state, funding_tx = self.contract.functions.deals(deal_key(deal_id)).call()
         return {"advertiser": advertiser, "payee": payee, "cap": cap, "released": released, "proof_deadline": deadline,
                 "state": self._STATES[state], "funding_tx": "0x" + bytes(funding_tx).hex()}  # fmt: skip
+
+    def block_number(self) -> int:
+        return int(self.w3.eth.block_number)
+
+    def tx_block(self, tx_hash: str) -> int | None:
+        if tx_hash.lower() in self._blocks:
+            return self._blocks[tx_hash.lower()]
+        receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+        return int(receipt["blockNumber"]) if receipt and receipt["status"] == 1 else None
+
+    def find_release(self, deal_id: str, nonce: int, from_block: int) -> Release | None:
+        """The contract's own Released event for this deal and attestation nonce: proof a payout happened, found
+        again after a crash or a lost response, so a retry records it instead of paying twice."""
+        logs = self.contract.events.Released.get_logs(from_block=max(0, from_block), argument_filters={"dealId": deal_key(deal_id)})
+        for log in logs:
+            if int(log["args"]["nonce"]) == nonce:
+                return Release(hex_tx(log["transactionHash"]), int(log["blockNumber"]), int(log["args"]["amount"]),
+                               to_checksum_address(log["args"]["payee"]))  # fmt: skip
+        return None
+
+    def find_refund(self, deal_id: str, from_block: int) -> Release | None:
+        """The Refunded event that closed this deal (each deal closes once)."""
+        logs = self.contract.events.Refunded.get_logs(from_block=max(0, from_block), argument_filters={"dealId": deal_key(deal_id)})
+        for log in logs:
+            return Release(hex_tx(log["transactionHash"]), int(log["blockNumber"]), int(log["args"]["amount"]),
+                           to_checksum_address(log["args"]["advertiser"]))  # fmt: skip
+        return None
 
     def _remaining(self, deal_id: str) -> int:
         d = self.get_deal(deal_id)

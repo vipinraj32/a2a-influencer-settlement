@@ -33,7 +33,7 @@ export const STATE_INFO: Record<DealState, { label: string; tone: Tone; hint: st
   PAYMENT_EXPIRED: { label: "Authorization expired", tone: "neutral", hint: "The signature expired before it was used; nothing moved" },
   PROOF_SUBMITTED: { label: "Proof submitted", tone: "info", hint: "Verifier is checking the video" },
   PROOF_REJECTED: { label: "Proof rejected", tone: "bad", hint: "Fix the post and resubmit before the deadline" },
-  VERIFIED: { label: "Verified", tone: "good", hint: "Fixed fee releases after the live window" },
+  VERIFIED: { label: "Verified", tone: "good", hint: "Fixed fee releases now, or after your review if required" },
   FIXED_RELEASED: { label: "Fixed fee paid", tone: "good", hint: "Performance fee pays out at day 7" },
   DISPUTED: { label: "Disputed", tone: "bad", hint: "Funds frozen until resolved" },
   COMPLETED: { label: "Completed", tone: "good", hint: "All payouts done, remainder refunded" },
@@ -103,3 +103,6 @@ export const SOURCE_LABEL: Record<string, string> = {
   derived_estimate: "Estimate",
   unavailable: "Unknown",
 };
+
+/** What the advertiser calls a campaign; older campaigns without a name read as "Brand · niche". */
+export const campaignName = (spec: { name?: string; advertiser: string; niche: string }) => spec.name?.trim() || `${spec.advertiser} · ${spec.niche}`;

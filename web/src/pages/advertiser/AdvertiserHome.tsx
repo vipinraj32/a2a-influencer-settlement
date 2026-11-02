@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../../api";
 import { Avatar, CampaignBadge, ErrorText, Spinner, StateBadge } from "../../components/ui";
-import { num, usd, when } from "../../format";
+import { DELIVERABLE_LABEL, campaignName, num, usd, when } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
 import { Icon } from "../landing/parts";
 import { useMe, useSession } from "../../session";
@@ -136,8 +136,8 @@ export function AdvertiserHome() {
                         <Icon name={a.deal ? "alert" : "key"} size={18} />
                       </span>
                       <span className="todo-body">
-                        <strong>{a.deal ? (a.campaign?.spec.advertiser ?? "Campaign") : "Sign the Payment Mandates"}</strong>
-                        <span>{a.deal ? <StateBadge state={a.deal.state} /> : `${a.campaign?.spec.advertiser} · agreed terms are ready`}</span>
+                        <strong>{a.deal ? (a.campaign ? campaignName(a.campaign.spec) : "Campaign") : "Sign the Payment Mandates"}</strong>
+                        <span>{a.deal ? <StateBadge state={a.deal.state} /> : `${a.campaign ? campaignName(a.campaign.spec) : ""} · agreed terms are ready`}</span>
                       </span>
                       <Icon name="arrow" size={16} />
                     </Link>
@@ -259,7 +259,7 @@ export function CampaignList({ campaigns, byCampaign, pageSize = 5 }: { campaign
   const current = FILTERS.find((f) => f.key === filter) ?? FILTERS[0];
   const shown = campaigns
     .filter(current.match)
-    .filter((c) => !q || [c.spec.advertiser, c.spec.niche, c.spec.deliverable, c.status].some((v) => v?.toLowerCase().includes(q)));
+    .filter((c) => !q || [c.spec.name, c.spec.advertiser, c.spec.niche, c.spec.deliverable, c.status].some((v) => v?.toLowerCase().includes(q)));
   const pages = Math.max(1, Math.ceil(shown.length / pageSize));
   const at = Math.min(page, pages - 1);
   const slice = shown.slice(at * pageSize, at * pageSize + pageSize);
@@ -347,9 +347,10 @@ function CampaignRow({ campaign: c, deals }: { campaign: Campaign; deals: Deal[]
       <Link to={`/advertiser/campaigns/${c.spec.id}`} className="camp">
         <span className="camp-top">
           <span className="camp-name">
-            <strong>{c.spec.advertiser}</strong>
+            <strong>{campaignName(c.spec)}</strong>
             <span className="muted small">
-              {c.spec.niche} · {c.spec.deliverable || "video"} · {when(c.created_at)}
+              {c.spec.name ? `${c.spec.advertiser} · ` : ""}
+              {c.spec.niche} · {DELIVERABLE_LABEL[c.spec.deliverable] ?? c.spec.deliverable ?? "video"} · {when(c.created_at)}
             </span>
           </span>
           <CampaignBadge status={c.status} />

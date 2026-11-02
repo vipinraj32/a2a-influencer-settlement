@@ -33,7 +33,7 @@ class CampaignRunner:
     async def start(self, spec: CampaignSpec) -> Campaign:
         campaign = Campaign(spec=spec, created_at=self.deals.ctx.clock.now())
         await self.deals.save_campaign(campaign)
-        await self.deals.audit(spec.id, None, "human", "campaign_created", budget=spec.budget, niche=spec.niche, max_creators=spec.max_creators)
+        await self.deals.audit(spec.id, None, "human", "campaign_created", name=spec.name, budget=spec.budget, niche=spec.niche, max_creators=spec.max_creators)
         self._spawn(spec.id, {"campaign_id": spec.id})
         return campaign
 

@@ -39,6 +39,8 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "eth-tester>=0.14.0b1",
+    "py-evm>=0.12.1b1",
     "py-solc-x>=2.0.5",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
@@ -65,5 +67,9 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 "tests/test_proof_review.py" = ["F811"]
 "tests/test_negotiation_stream.py" = ["F811"]
 "tests/test_sequential_negotiation.py" = ["F811"]
+"tests/test_campaign_names.py" = ["F811"]
+"tests/test_influencer_deals_page.py" = ["F811"]
+"tests/test_chat_messages.py" = ["F811"]
+"tests/test_sepolia_escrow.py" = ["F811"]
 "tests/test_database_outage.py" = ["F811"]
 "tests/test_content_agent.py" = ["F811"]  # reuses test_e2e's fixtures by importing them

@@ -37,7 +37,7 @@ ZyroXQ is a decentralized influencer-marketing platform built for the HashKey **
 | Payment Mandate (x402 `exact` / EIP-3009 signature) + simulated HSP gateway | ✅ Built and tested |
 | Influencer + Advertiser agents (LangGraph, A2A, parallel negotiation, wallet-signature pause) | ✅ Built and tested end to end |
 | Verifier (YouTube checks, prompt-injection flag, signed attestations) | ✅ Built; uses the YouTube Data API key |
-| CampaignEscrow.sol + Python escrow (simulated ledger / on-chain) | ✅ Compiles; simulated ledger tested; not yet deployed |
+| CampaignEscrow.sol + Python escrow (simulated ledger / on-chain) | ✅ Tested on a local EVM; Sepolia mode ready; not yet deployed |
 | MCP server (read-only tools) + LangChain assistant | ✅ Tools tested over streamable HTTP; assistant needs `ANTHROPIC_API_KEY` |
 | PostgreSQL store + LangGraph Postgres checkpointer | ✅ Built; needs a database to test (`TEST_DATABASE_URL`) |
 | Google sign-in + YouTube channel proof + MetaMask wallet linking | ✅ Built; OAuth flow tested with mocked Google |
@@ -68,11 +68,12 @@ their agent key; and set their rates. Everything updates live over Server-Sent E
 | `ANTHROPIC_API_KEY` | Claude negotiation, brief drafting and the campaign assistant (rules otherwise) |
 | `VERIFIER_PRIVATE_KEY` | A stable attestation key (random per run otherwise) |
 | `ESCROW_ADDRESS` + `OPERATOR_PRIVATE_KEY` | On-chain CampaignEscrow (`uv run python scripts/deploy_escrow.py`) |
-| `SETTLEMENT_MODE=hosted` + HSP credentials | Real HSP orders; the advertiser pays in HSP's hosted checkout |
+| `PAYMENT_MODE=hosted` + HSP credentials | Real HSP orders; the advertiser pays in HSP's hosted checkout |
+| `PAYMENT_MODE=sepolia` + `SEPOLIA_RPC_URL` + escrow keys | Real Circle test USDC on Ethereum Sepolia, visible on Etherscan (no HSP) |
 
 Until HSP credentials and the escrow are set, the gateway and escrow are emulated in-process with the same checks,
 and the advertiser's **browser wallet** still signs the real EIP-712 Payment Mandate. The top bar shows what is
-simulated. With the simulated escrow, **+49 h / +7 days** move the clock to trigger releases.
+simulated. With the simulated escrow, **+7 days** moves the clock to trigger the performance payout and refunds.
 
 MCP for Claude Desktop (server must be running): `uv run zyroxq mcp` over stdio with `ZYROXQ_API_TOKEN` set to
 `MCP_API_TOKEN`, or connect to `http://localhost:8000/mcp/` with that bearer token.
@@ -220,11 +221,11 @@ Verifier (code):
 
 ### Phase 8: Payouts
 ```
-T+48h: still live? → release FIXED fee to the influencer          (escrow.release)
+Verified: release FIXED fee to the influencer at once           (escrow.release; after the advertiser's review if required)
 T+7d:  views = YouTube API → perf = min(cap - fixed, views/1000 × rate) → release
        remainder → refund to the advertiser
 No proof by the deadline → full refund
-Advertiser disputes in the review window → DISPUTED → arbiter decides the split
+Advertiser disputes while a required review holds the fee → DISPUTED → arbiter decides the split
 ```
 
 ---
@@ -447,12 +448,22 @@ Outcomes:
 
 `SimulatedEscrow` mirrors these rules. Change both together.
 
-| | Simulated (`SETTLEMENT_MODE=simulated`, default) | Hosted (`SETTLEMENT_MODE=hosted`) |
-|---|---|---|
-| Payment | Browser-signed authorization, verified by an in-process HSP emulator | HSP hosted checkout (`payment_url`): the payer-side API is undocumented |
-| Settlement evidence | The simulated escrow's own receipts (tx hashes start `0x5111`) | Transaction receipt on HashKey Chain Testnet |
-| Money | **None moves.** Deals, payouts and refunds are labelled "simulated" | Real testnet USDC |
-| Start-up | Refuses `ESCROW_ADDRESS` | Refuses to start unless `HSP_APP_KEY`, `HSP_APP_SECRET`, the merchant key file, `ESCROW_ADDRESS`, `OPERATOR_PRIVATE_KEY` and `VERIFIER_PRIVATE_KEY` are set, the RPC is chain 133 and the deployed escrow's `token()`, `operator()` and `verifier()` match. It never falls back to simulation |
+`PAYMENT_MODE` selects the mode (`SETTLEMENT_MODE` is still read as the older name).
+
+| | Simulated (`simulated`, default) | Hosted (`hosted`) | Sepolia (`sepolia`) |
+|---|---|---|---|
+| Payment | Browser-signed authorization, verified by an in-process HSP emulator | HSP hosted checkout (`payment_url`): the payer-side API is undocumented | Browser-signed EIP-3009 authorization; the server checks it and relays `transferWithAuthorization` to the token itself (the operator pays the gas). **HSP is not in this path** |
+| Settlement evidence | The simulated escrow's own receipts (tx hashes start `0x5111`) | Transaction receipt on HashKey Chain Testnet | Transaction receipt on Ethereum Sepolia (`Transfer` payer → escrow, exact cap, `SETTLEMENT_MIN_CONFIRMATIONS`) |
+| Money | **None moves.** Deals, payouts and refunds are labelled "simulated" | Real testnet USDC | Real test USDC (Circle, `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`, 6 decimals) |
+| Start-up | Refuses `ESCROW_ADDRESS` | Refuses to start unless `HSP_APP_KEY`, `HSP_APP_SECRET`, the merchant key file, `ESCROW_ADDRESS`, `OPERATOR_PRIVATE_KEY` and `VERIFIER_PRIVATE_KEY` are set, the RPC is chain 133 and the deployed escrow's `token()`, `operator()` and `verifier()` match. It never falls back to simulation | Refuses to start unless `SEPOLIA_RPC_URL`, `ESCROW_ADDRESS`, `OPERATOR_PRIVATE_KEY` and `VERIFIER_PRIVATE_KEY` are set, the RPC is chain 11155111, the token's code, decimals, EIP-712 domain (`USDC`, version `2`) and EIP-3009 support check out, and the escrow matches. It never falls back |
+
+**Payouts on chain (hosted and sepolia).** A payout is decided by deterministic code (verified proof, policy, the
+deal's windows), attested by the verifier key and stored as a payout intent **before** its transaction is sent. A
+retry after a crash, timeout or restart reuses that same attestation, which the contract accepts only once; an
+attestation already used is found in the escrow's `Released` / `Refunded` events instead of being sent again. A
+payout is recorded only from a successful receipt or such an event, with its tx hash, block, chain, token, recipient
+and amount. The fixed fee is released as soon as the proof is verified (or the advertiser approves it, when the
+campaign requires a review); the performance fee only after views are measured 7 days after publication.
 
 **Configure hosted mode:**
 1. `uv run zyroxq gen-merchant-key`, then register the public key with HashKey to receive `HSP_APP_KEY` / `HSP_APP_SECRET`.
@@ -462,6 +473,18 @@ Outcomes:
 4. Set `SETTLEMENT_MODE=hosted` and restart. `/api/status` shows the mode.
 
 The advertiser needs testnet USDC in the linked wallet. No faucet is documented, so ask HashKey (Open questions above).
+
+**Configure sepolia mode** (each deploy or payment step sends a real Sepolia transaction; run it yourself):
+1. Create two fresh testnet-only keys for the operator and the verifier and put them in `.env` (never commit it).
+   Fund the operator with Sepolia ETH from a faucet: it pays gas for deployment, funding relays and payouts.
+2. Set `SEPOLIA_RPC_URL` (your Infura / Alchemy / other Sepolia endpoint; it stays on the server).
+3. `uv run python scripts/compile_contracts.py` then `uv run python scripts/deploy_escrow.py --network sepolia`.
+   It checks the token on chain first and prints `ESCROW_ADDRESS`.
+4. Set `PAYMENT_MODE=sepolia` and `ESCROW_ADDRESS`, restart. `/api/status` shows `"settlement_mode": "sepolia"` and
+   `"hsp_in_payment_path": false`.
+5. The advertiser gets test USDC at https://faucet.circle.com (Ethereum Sepolia), links that wallet, and signs the
+   payment on the campaign page. The deal is FUNDED once the receipt is confirmed; the funding and payout
+   transactions link to https://sepolia.etherscan.io from the deal and campaign pages.
 
 **Still blocked externally:**
 - The HSP payer-side submission.
@@ -477,8 +500,10 @@ The contract has not been deployed.
 - `uv run pytest` runs everything without credentials or funds. `tests/test_funding.py` covers each funding failure
   mode, and `tests/test_e2e.py` covers the API flow.
 - Set `TEST_DATABASE_URL` to also run the PostgreSQL atomicity tests. Use a throwaway database.
-- The contract is compiled with solc 0.8.24, but there is no local-EVM test. `eth-tester[py-evm]` does not build on
-  Windows / Python 3.13 (`safe-pysha3`), so `SimulatedEscrow` tests stand in for the contract rules.
+- `tests/test_sepolia_escrow.py` runs the real `CampaignEscrow` bytecode on a local EVM (eth-tester + py-evm, dev
+  dependencies) with `contracts/test/TestUSDC.sol`, a tests-only EIP-3009 token: funding, fixed and performance
+  releases, crash-and-retry without double pay, refused unfunded / unattested / replayed / over-cap releases,
+  look-alike tokens, reverted transactions and restart reconciliation. Nothing in the suite touches a public network.
 
 ## Folder structure
 
@@ -492,7 +517,8 @@ src/zyroxq/
   policy/engine.py     every payment rule, pure functions
   agent_policy/        configurable agents: profiles (3 layers), decision engine, pricing, evidence, material changes
   compliance/          versioned sponsorship-disclosure policies (IN, US) + deterministic checks
-  wallet/              signer (EIP-3009 Payment Mandate, EIP-191 terms) · gateway (simulated / hosted HSP)
+  wallet/              signer (EIP-3009 Payment Mandate, EIP-191 terms) · gateway (simulated / hosted HSP / sepolia relay)
+  chain/sender.py      operator transactions: sign, broadcast, wait; the tx hash is known before broadcast
   chain/escrow.py      SimulatedEscrow + OnchainEscrow (same rules as the contract)
   chain/settlement.py  settlement evidence: receipt → Transfer(payer → escrow, exact amount); simulated twin
   chain/balances.py    advisory USDC balance reads for the signing panel

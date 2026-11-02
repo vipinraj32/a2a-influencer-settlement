@@ -58,7 +58,8 @@ export interface ChainInfo {
 }
 
 export interface PlatformStatus {
-  settlement_mode: "simulated" | "hosted";
+  settlement_mode: "simulated" | "hosted" | "sepolia";
+  hsp_in_payment_path: boolean;
   settlement_simulated: boolean;
   settlement_min_confirmations: number;
   browser_signing: boolean;
@@ -110,6 +111,7 @@ export interface NicheAnalysis {
 
 export interface CampaignSpec {
   id: string;
+  name: string; // the advertiser's own label ("" on campaigns from before names); never shown to creators
   advertiser: string;
   brand_handle: string;
   niche: string;
@@ -372,6 +374,20 @@ export interface Payout {
   tx_hash: string;
   at: string;
   simulated: boolean;
+  block_number: number | null;
+  chain_id: number | null;
+  token: string;
+  views: number | null;
+}
+
+/** A payout decided and signed, persisted before its transaction is sent (retries reuse it, never pay twice). */
+export interface PayoutIntent {
+  kind: "fixed" | "performance" | "refund";
+  amount: string;
+  views: number | null;
+  created_at: string;
+  attempts: number;
+  error: string;
 }
 
 export interface Deal {
@@ -392,10 +408,12 @@ export interface Deal {
   payment_attempts: PaymentAttempt[];
   funding_tx: string | null;
   funding_simulated: boolean;
+  funding_block: number | null;
   proof: Proof | null;
   proof_history: Proof[];
   attestations: { kind: string; amount: string; evidence_hash: string; verifier: string; signature: string }[];
   payouts: Payout[];
+  payout_intent: PayoutIntent | null;
   fixed_release_due: string | null;
   performance_due: string | null;
   policy_violations: string[];
@@ -474,6 +492,7 @@ export interface LiveEvent {
 }
 
 export interface CampaignInput {
+  name: string;
   advertiser: string;
   brand_handle: string;
   niche: string;
@@ -801,6 +820,8 @@ export interface NegotiationEvent {
   content: string;
   offer: { fixed_fee: string; cpm: string; cap: string; round: number } | null;
   reply?: ReplyKind;
+  /** Advertiser messages: what the message does with the offer it carries. Absent on transcripts from before it existed. */
+  intent?: "offer" | "counter" | "accept";
   outcome?: "agreed" | "rejected" | "timeout" | "escalated" | "cancelled" | "error";
   max_rounds?: number;
   compensation_model?: CompensationModel;

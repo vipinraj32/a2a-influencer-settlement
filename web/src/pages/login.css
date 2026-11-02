@@ -44,14 +44,14 @@
   position: relative;
   display: grid;
   place-items: center;
-  padding: 72px 24px 48px;
+  padding: 48px 24px;
   background: var(--bg);
 }
 .auth-back {
-  position: absolute;
-  top: 28px;
-  right: 32px;
-  color: var(--text);
+  align-self: flex-start;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: var(--fs-small);
   font-weight: 600;
 }
 .auth-back:hover {
@@ -146,11 +146,7 @@
     height: 420px;
   }
   .auth-main {
-    padding: 64px 16px 40px;
-  }
-  .auth-back {
-    top: 20px;
-    right: 20px;
+    padding: 40px 16px;
   }
   .auth-card {
     padding: 28px 20px;

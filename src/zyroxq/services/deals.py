@@ -7,15 +7,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import httpx
 
 from ..agent_policy import AdvertiserPolicy, DecisionRecord, calculate
-from ..chain.escrow import EscrowError
-from ..chain.settlement import FundingEvidence, SettlementMismatch, SettlementPending
+from ..chain.escrow import EscrowError, Release
+from ..chain.settlement import FundingEvidence, SettlementMismatch, SettlementPending, SettlementReverted
 from ..compliance import proof_checks as disclosure_checks
 from ..feedback import performance_row
 from ..hsp.cart import build_cart_contents, cart_method, cart_total
@@ -32,6 +32,7 @@ from ..models import (
     Offer,
     PaymentAttempt,
     Payout,
+    PayoutIntent,
     Proof,
     ProofCheck,
     new_id,
@@ -665,19 +666,21 @@ class DealService:
         await self.audit(deal.campaign_id, deal.id, "wallet", "payment_mandate_signed", payer=mandate.payer, value=auth["value"], to=auth["to"],
                          scheme="x402 exact / EIP-3009", simulated=self.ctx.gateway.simulated)  # fmt: skip
         try:
-            await asyncio.wait_for(self.ctx.gateway.submit_payment_mandate(mandate), self.ctx.settings.hsp_submit_timeout_seconds)
+            tx = await asyncio.wait_for(self.ctx.gateway.submit_payment_mandate(mandate, deal.cart_contents), self.ctx.settings.hsp_submit_timeout_seconds)
         except GatewayRejected as e:
             deal = await self._attempt(deal.id, auth["nonce"], "failed", error=str(e))
             await self.save(deal, DealState.PAYMENT_FAILED)
             await self.audit(deal.campaign_id, deal.id, "hsp", "payment_rejected", reason=str(e))
         except (TimeoutError, GatewayUnavailable, httpx.HTTPError) as e:
             # The transfer may still settle: never fail it or re-sign, reconcile with HSP and the chain instead
-            deal = await self._attempt(deal.id, auth["nonce"], "unknown", error=f"{type(e).__name__}: {e}"[:300])
+            deal = await self._attempt(deal.id, auth["nonce"], "unknown", tx_hash=getattr(e, "tx_hash", None), error=f"{type(e).__name__}: {e}"[:300])
             if deal.state in (DealState.SIGNED, DealState.FUNDING):
                 await self.save(deal, DealState.PAYMENT_UNKNOWN)
             await self.audit(deal.campaign_id, deal.id, "hsp", "payment_outcome_unknown", reason=type(e).__name__)
         else:
-            await self._attempt(deal.id, auth["nonce"], "pending")
+            await self._attempt(deal.id, auth["nonce"], "pending", tx_hash=tx if self.ctx.gateway.direct_onchain else None)
+            if self.ctx.gateway.direct_onchain:  # no webhook will come: check the transaction now, the scheduler keeps checking
+                await self.reconcile(await self.get(deal.id))
         return await self.get(deal.id)
 
     async def _attempt(self, deal_id: str, key: str, status: str, *, tx_hash: str | None = None, error: str = "") -> Deal:
@@ -724,6 +727,14 @@ class DealService:
         """Asks HSP again and re-checks the chain for a deal whose payment is pending or ambiguous."""
         if deal.payment_request_id is None:
             return
+        attempt = deal.payment_attempts[-1] if deal.payment_attempts else None
+        if self.ctx.gateway.direct_onchain:
+            # No gateway to ask: the submitted transaction is the only claim, and its receipt decides (after restarts too)
+            if attempt is not None and attempt.tx_hash and attempt.status != "failed":
+                await self._apply_status(deal, "payment-finalized", attempt.tx_hash, attempt.payer, source="chain")
+                return
+            await self._authorization_expired(deal, attempt)
+            return
         try:
             lookup = await self.ctx.gateway.lookup_payment(deal.payment_request_id)
         except GatewayUnavailable as e:
@@ -733,7 +744,10 @@ class DealService:
             await self._apply_status(deal, lookup.status, lookup.tx_hash, lookup.payer, source="reconcile")
             return
         # HSP has no record. Only the token contract can say the authorization will never settle.
-        attempt = deal.payment_attempts[-1] if deal.payment_attempts else None
+        await self._authorization_expired(deal, attempt)
+
+    async def _authorization_expired(self, deal: Deal, attempt: PaymentAttempt | None) -> None:
+        """PAYMENT_FAILED once the authorization has expired and the token says it was never used."""
         if attempt is None or int(self.ctx.clock.now().timestamp()) < attempt.valid_before:
             return
         try:
@@ -778,6 +792,14 @@ class DealService:
             await self.save(deal, DealState.FUNDING)
             await self.audit(deal.campaign_id, deal.id, "escrow", "settlement_pending", tx=tx_hash, reason=str(e))
             return
+        except SettlementReverted as e:
+            # Nothing moved. The signed authorization stays valid until it expires, so the deal is not failed yet:
+            # reconcile marks it failed once the token confirms the authorization was never used.
+            if deal.payment_attempts:
+                deal = await self._attempt(deal.id, deal.payment_attempts[-1].idempotency_key, "failed", tx_hash=tx_hash, error=str(e))
+            await self.save(deal, DealState.PAYMENT_UNKNOWN)
+            await self.audit(deal.campaign_id, deal.id, "escrow", "settlement_reverted", tx=tx_hash)
+            return
         except (SettlementMismatch, EscrowError) as e:
             await self.save(deal, DealState.PAYMENT_UNKNOWN)
             await self.audit(deal.campaign_id, deal.id, "escrow", "settlement_unverified", tx=tx_hash, reason=str(e))
@@ -812,6 +834,7 @@ class DealService:
                 await self.audit(deal.campaign_id, deal.id, "escrow", "funding_failed", reason=str(e))
                 return
         deal.funding_tx = evidence.tx_hash
+        deal.funding_block = evidence.block_number
         deal.funding_simulated = evidence.simulated
         await self.save(deal, DealState.FUNDED)
         if deal.payment_attempts:
@@ -867,10 +890,13 @@ class DealService:
                              resubmit_by=review.resubmit_by, issues=[i.check for i in review.issues])  # fmt: skip
             return await self.save(deal, DealState.PROOF_REJECTED)
         terms = self._terms(deal)
-        deal.fixed_release_due = now + timedelta(hours=max(terms.min_live_hours, terms.review_window_hours))
+        # The fixed fee is due as soon as the proof is verified; the performance fee still waits for the day-7 views,
+        # and that re-check is also what catches a video taken down after the fixed payout
+        deal.fixed_release_due = now
         assert video is not None
         deal.performance_due = max(video.published_at + timedelta(days=terms.views_measured_after_days), deal.fixed_release_due)
         await self.save(deal, DealState.VERIFIED)
+        deal = await self.release_due(deal.id)
         await self.refresh_campaign_status(deal.campaign_id)
         return deal
 
@@ -896,6 +922,9 @@ class DealService:
             await self.audit(deal.campaign_id, deal.id, "human", "proof_rejected", summary=deal.proof.review.summary,
                              can_resubmit=deal.proof.review.can_resubmit, resubmit_by=deal.proof.review.resubmit_by)  # fmt: skip
             deal = await self.save(deal, DealState.PROOF_REJECTED)
+        else:
+            deal = await self.release_due(deal.id)  # the review was the only thing holding the fixed fee
+            await self.refresh_campaign_status(deal.campaign_id)
         return deal
 
     @staticmethod
@@ -912,7 +941,7 @@ class DealService:
     async def dispute(self, deal_id: str, reason: str) -> Deal:
         deal = await self.get(deal_id)
         if deal.state != DealState.VERIFIED:
-            raise DealError("disputes are only possible during the review window")
+            raise DealError("disputes are only possible while the fixed fee is still held (awaiting your review)")
         await self.audit(deal.campaign_id, deal.id, "human", "disputed", reason=reason)
         return await self.save(deal, DealState.DISPUTED)
 
@@ -924,22 +953,45 @@ class DealService:
             if deal.state in PAYMENT_PENDING:
                 await self.reconcile(deal)
                 continue
-            try:
-                if deal.state in (DealState.FUNDED, DealState.PROOF_REJECTED) and now > self._terms(deal).publish_by:
-                    await self._refund_expired(deal)
-                elif deal.state == DealState.VERIFIED and deal.fixed_release_due and now >= deal.fixed_release_due:
-                    if self.review_pending(deal, (await self.campaign(deal.campaign_id)).spec):
-                        continue  # the advertiser's disclosure review gates the release
-                    await self._release_fixed(deal)
-                elif deal.state == DealState.FIXED_RELEASED and deal.performance_due and now >= deal.performance_due:
-                    await self._release_performance(deal)
-                else:
-                    continue
+            if not await self._payout_due(deal, now):
+                continue
+            before = deal.state
+            deal = await self.release_due(deal.id)
+            if deal.state != before:
                 actions += 1
-            except (EscrowError, DealError) as e:
-                await self.audit(deal.campaign_id, deal.id, "escrow", "payout_error", reason=str(e))
             await self.refresh_campaign_status(deal.campaign_id)
         return actions
+
+    async def _payout_due(self, deal: Deal, now: datetime) -> bool:
+        if deal.state in (DealState.FUNDED, DealState.PROOF_REJECTED):
+            return now > self._terms(deal).publish_by
+        if deal.state == DealState.VERIFIED:
+            # the advertiser's disclosure review, when the campaign asks for one, gates the fixed fee
+            return bool(deal.fixed_release_due and now >= deal.fixed_release_due) and not self.review_pending(
+                deal, (await self.campaign(deal.campaign_id)).spec
+            )
+        if deal.state == DealState.FIXED_RELEASED:
+            return bool(deal.performance_due and now >= deal.performance_due)
+        return False
+
+    async def release_due(self, deal_id: str) -> Deal:
+        """Makes whatever payout is due for one deal now. Callers race (the scheduler, a verified proof, an approved
+        review): the deal lock and a fresh read make sure only one of them decides and attests each payout. Escrow
+        failures are recorded and left to the next tick, which resumes the same payout intent."""
+        async with self._deal_lock(deal_id):
+            deal = await self.get(deal_id)
+            if not await self._payout_due(deal, self.ctx.clock.now()):
+                return deal
+            try:
+                if deal.state == DealState.VERIFIED:
+                    await self._release_fixed(deal)
+                elif deal.state == DealState.FIXED_RELEASED:
+                    await self._release_performance(deal)
+                else:
+                    await self._refund_expired(deal)
+            except (EscrowError, DealError) as e:
+                await self.audit(deal.campaign_id, deal.id, "escrow", "payout_error", reason=str(e))
+            return await self.get(deal_id)
 
     async def _recheck(self, deal: Deal) -> tuple[bool, int]:
         assert deal.proof is not None and deal.agreed_at is not None
@@ -950,52 +1002,132 @@ class DealService:
         checks = check_video(self._terms(deal), video, deal.agreed_at, spec.brand_handle)
         return all_passed(checks), video.views if video else 0
 
-    async def _release(self, deal: Deal, amount: Decimal, kind: str, views: int | None) -> None:
+    def _paid(self, deal: Deal, kind: str) -> bool:
+        return any(p.kind == kind for p in deal.payouts)
+
+    async def _release(self, deal: Deal, amount: Decimal, kind: str, views: int | None) -> Deal:
+        """Pays one attested amount out of the escrow, at most once, whatever fails or restarts on the way.
+
+        1. The decision (amount + verifier attestation) is persisted as a PayoutIntent before anything is sent.
+        2. If the escrow already used that attestation (its Released event exists), the payout is recorded from the
+           event: the earlier send went through and only its record was lost.
+        3. Otherwise the same attestation is sent; the escrow accepts it once, so a resend cannot pay twice.
+        The Payout is recorded only from a successful receipt or the Released event."""
         assert deal.proof is not None
         terms = self._terms(deal)
-        att = self.ctx.attestor.attest(deal.id, deal.proof.video_id, terms.payee, amount, kind,  # type: ignore[arg-type]
-                                       deal.proof.checks, views=views)  # fmt: skip
+        intent = deal.payout_intent
+        if intent is None or intent.kind != kind:
+            att = self.ctx.attestor.attest(deal.id, deal.proof.video_id, terms.payee, amount, kind,  # type: ignore[arg-type]
+                                           deal.proof.checks, views=views)  # fmt: skip
+            block = await asyncio.to_thread(self.ctx.escrow.block_number)
+            intent = PayoutIntent(kind=kind, amount=amount, nonce=att.nonce, signature=att.signature, evidence_hash=att.evidence_hash,  # type: ignore[arg-type]
+                                  views=views, from_block=block, created_at=self.ctx.clock.now())  # fmt: skip
+            deal.payout_intent = intent
+            deal.attestations.append(att)
+            deal = await self.save(deal)
+            await self.audit(deal.campaign_id, deal.id, "escrow", "payout_authorized", kind=kind, amount=amount, to=terms.payee,
+                             attestation=att.evidence_hash, views=views)  # fmt: skip
+        units = to_token_units(intent.amount, self.ctx.token.decimals)
         async with self._lock:
-            tx = await asyncio.to_thread(self.ctx.escrow.release, deal.id, to_token_units(amount, self.ctx.token.decimals), att.nonce, att.signature)
-        deal.attestations.append(att)
-        deal.payouts.append(Payout(kind=kind, to=terms.payee, amount=amount, tx_hash=tx, at=self.ctx.clock.now(),  # type: ignore[arg-type]
-                                   simulated=self.ctx.escrow.simulated))  # fmt: skip
-        await self.audit(deal.campaign_id, deal.id, "escrow", f"{kind}_released", amount=amount, to=terms.payee, tx=tx,
-                         attestation=att.evidence_hash, views=views, simulated=self.ctx.escrow.simulated)  # fmt: skip
-        await self.notify_influencer(deal, "payout", kind=kind, amount=amount, tx=tx)
+            found = await asyncio.to_thread(self.ctx.escrow.find_release, deal.id, intent.nonce, intent.from_block)
+            if found is None:
+                try:
+                    tx = await asyncio.to_thread(self.ctx.escrow.release, deal.id, units, intent.nonce, intent.signature)
+                except EscrowError as e:
+                    # A lost response may still have paid: only the escrow's event can say, so look once more
+                    found = await asyncio.to_thread(self.ctx.escrow.find_release, deal.id, intent.nonce, intent.from_block)
+                    if found is None:
+                        intent.attempts += 1
+                        intent.error = str(e)[:300]
+                        await self.save(deal)
+                        raise
+                else:
+                    found = Release(tx, await asyncio.to_thread(self.ctx.escrow.tx_block, tx), units, terms.payee)
+        return await self._record_payout(deal, intent, found)
+
+    async def _record_payout(self, deal: Deal, intent: PayoutIntent, done: Release) -> Deal:
+        escrow = self.ctx.escrow
+        to = deal.payer or "" if intent.kind == "refund" else self._terms(deal).payee
+        amount = Decimal(done.amount_units) / (Decimal(10) ** self.ctx.token.decimals) if intent.kind == "refund" else intent.amount
+        payout = Payout(kind=intent.kind, to=to, amount=amount, tx_hash=done.tx_hash, at=self.ctx.clock.now(), simulated=escrow.simulated,
+                        block_number=done.block_number, chain_id=escrow.chain_id, token=self.ctx.token.contract_address,
+                        views=intent.views)  # fmt: skip
+        deal.payouts.append(payout)
+        deal.payout_intent = None
+        deal = await self.save(deal)
+        kind = f"{intent.kind}_released" if intent.kind != "refund" else "refunded"
+        await self.audit(deal.campaign_id, deal.id, "escrow", kind, amount=amount, to=to, tx=done.tx_hash, block=done.block_number,
+                         attestation=intent.evidence_hash or None, views=intent.views, simulated=escrow.simulated)  # fmt: skip
+        if intent.kind != "refund":
+            await self.notify_influencer(deal, "payout", kind=intent.kind, amount=amount, tx=done.tx_hash)
+        return deal
+
+    async def _close(self, deal: Deal) -> Deal:
+        """Returns the escrow's remainder to the advertiser, once (a closed escrow deal is recorded from its event)."""
+        if self._paid(deal, "refund"):
+            return deal
+        intent = deal.payout_intent
+        if intent is None or intent.kind != "refund":
+            block = await asyncio.to_thread(self.ctx.escrow.block_number)
+            intent = PayoutIntent(kind="refund", amount=Decimal(0), from_block=block, created_at=self.ctx.clock.now())
+            deal.payout_intent = intent
+            deal = await self.save(deal)
+        expired = deal.state in (DealState.FUNDED, DealState.PROOF_REJECTED)
+        async with self._lock:
+            found = await asyncio.to_thread(self.ctx.escrow.find_refund, deal.id, intent.from_block)
+            if found is None:
+                try:
+                    if expired:
+                        tx, units = await asyncio.to_thread(self.ctx.escrow.refund_expired, deal.id, int(self.ctx.clock.now().timestamp()))
+                    else:
+                        tx, units = await asyncio.to_thread(self.ctx.escrow.close, deal.id)
+                except EscrowError as e:
+                    found = await asyncio.to_thread(self.ctx.escrow.find_refund, deal.id, intent.from_block)
+                    if found is None:
+                        intent.attempts += 1
+                        intent.error = str(e)[:300]
+                        await self.save(deal)
+                        raise
+                else:
+                    found = Release(tx, await asyncio.to_thread(self.ctx.escrow.tx_block, tx), units, deal.payer or "")
+        if found.amount_units == 0:  # nothing left to return: no transfer happened, so no payout row
+            deal.payout_intent = None
+            return await self.save(deal)
+        return await self._record_payout(deal, intent, found)
 
     async def _release_fixed(self, deal: Deal) -> None:
-        still_ok, _ = await self._recheck(deal)
-        if not still_ok:
-            await self.audit(deal.campaign_id, deal.id, "verifier", "post_removed_before_release")
-            await self.save(deal, DealState.PROOF_REJECTED)
-            return
-        if self._terms(deal).fixed_fee > 0:  # CPM-only deals have no fixed fee to release
-            await self._release(deal, self._terms(deal).fixed_fee, "fixed", None)
+        # A payout already decided is finished, not re-decided: its attestation was signed for the checks that passed then
+        pending = deal.payout_intent is not None and deal.payout_intent.kind == "fixed"
+        if not pending and not self._paid(deal, "fixed"):
+            still_ok, _ = await self._recheck(deal)
+            if not still_ok:
+                await self.audit(deal.campaign_id, deal.id, "verifier", "post_removed_before_release")
+                await self.save(deal, DealState.PROOF_REJECTED)
+                return
+        if (pending or self._terms(deal).fixed_fee > 0) and not self._paid(deal, "fixed"):  # CPM-only deals have no fixed fee
+            deal = await self._release(deal, self._terms(deal).fixed_fee, "fixed", None)
         await self.save(deal, DealState.FIXED_RELEASED)
 
     async def _release_performance(self, deal: Deal) -> None:
-        still_ok, views = await self._recheck(deal)
-        terms = self._terms(deal)
-        amount = performance_payout(terms, views) if still_ok else Decimal("0")
-        if amount > 0:
-            await self._release(deal, amount, "performance", views)
-        async with self._lock:
-            tx, refunded_units = await asyncio.to_thread(self.ctx.escrow.close, deal.id)
-        refund = Decimal(refunded_units) / (Decimal(10) ** self.ctx.token.decimals)
-        if refund > 0:
-            deal.payouts.append(Payout(kind="refund", to=deal.payer or "", amount=refund, tx_hash=tx, at=self.ctx.clock.now(),
-                                       simulated=self.ctx.escrow.simulated))  # fmt: skip
-        await self.audit(deal.campaign_id, deal.id, "escrow", "deal_closed", views=views, performance=amount, refunded=refund, tx=tx)
+        intent = deal.payout_intent
+        views: int | None = None
+        if intent is not None and intent.kind == "performance":
+            deal = await self._release(deal, intent.amount, "performance", intent.views)
+        elif not self._paid(deal, "performance") and not (intent is not None and intent.kind == "refund"):
+            still_ok, views = await self._recheck(deal)
+            amount = performance_payout(self._terms(deal), views) if still_ok else Decimal("0")
+            if amount > 0:
+                deal = await self._release(deal, amount, "performance", views)
+        deal = await self._close(deal)
+        performance = sum((p.amount for p in deal.payouts if p.kind == "performance"), Decimal(0))
+        refund = sum((p.amount for p in deal.payouts if p.kind == "refund"), Decimal(0))
+        await self.audit(deal.campaign_id, deal.id, "escrow", "deal_closed", views=views, performance=performance, refunded=refund)
         await self.save(deal, DealState.COMPLETED)
 
     async def _refund_expired(self, deal: Deal) -> None:
-        async with self._lock:
-            tx, units = await asyncio.to_thread(self.ctx.escrow.refund_expired, deal.id, int(self.ctx.clock.now().timestamp()))
-        refund = Decimal(units) / (Decimal(10) ** self.ctx.token.decimals)
-        deal.payouts.append(Payout(kind="refund", to=deal.payer or "", amount=refund, tx_hash=tx, at=self.ctx.clock.now(),
-                                   simulated=self.ctx.escrow.simulated))  # fmt: skip
-        await self.audit(deal.campaign_id, deal.id, "escrow", "expired_refunded", refunded=refund, tx=tx)
+        deal = await self._close(deal)
+        refund = sum((p.amount for p in deal.payouts if p.kind == "refund"), Decimal(0))
+        await self.audit(deal.campaign_id, deal.id, "escrow", "expired_refunded", refunded=refund)
         await self.save(deal, DealState.EXPIRED_REFUNDED)
 
     @staticmethod

@@ -12,6 +12,7 @@ from .test_e2e import (  # noqa: F401 - pytest fixtures
     CAMPAIGN,
     by_influencer,
     client_for,
+    named,
     onboard_advertiser,
     onboard_influencer,
     server,
@@ -30,7 +31,7 @@ class RecordingLLM(FakeLLM):
 
 async def launch(app, advertiser_id: str, **overrides) -> tuple[str, dict]:
     adv = client_for(app, advertiser_id)
-    res = await adv.post("/api/campaigns", json={**CAMPAIGN, **overrides})
+    res = await adv.post("/api/campaigns", json=named(**overrides))
     assert res.status_code == 201, res.text
     cid = res.json()["spec"]["id"]
     await app.state.zx.runner.wait_idle()
@@ -75,7 +76,8 @@ async def test_messages_stream_as_they_happen_in_order(server):
     messages = [(e, s) for e, s in live if e["event_type"] == "message_completed"]
     assert messages[0][0]["agent_role"] == "advertiser" and messages[0][1] == DealState.NEGOTIATING
     assert messages[1][0]["agent_role"] == "influencer" and messages[1][1] == DealState.NEGOTIATING
-    assert messages[0][0]["offer"]["round"] == 1 and messages[0][0]["content"] == CAMPAIGN["brief"]
+    opening = messages[0][0]["content"]  # a chat message that greets the creator and carries the brief
+    assert messages[0][0]["offer"]["round"] == 1 and opening.startswith("Hi Kai") and CAMPAIGN["brief"] in opening
     assert types.index("agent_thinking") < [e["event_type"] for e, _ in live].index("message_completed", 2)
 
     # 3: several rounds, in order, alternating agents, ids gap-free

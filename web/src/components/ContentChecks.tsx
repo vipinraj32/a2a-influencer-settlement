@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { when } from "../format";
 import type { ContentCheck, ContentReport } from "../types";
-import { ErrorText, Notice } from "./ui";
+import { ErrorText } from "./ui";
 
 export function checkText(c: ContentCheck): string {
   if (c.kind === "spoken_mention") {
@@ -48,7 +48,7 @@ export function ContentChecksEditor({ value, onChange, requirements, brand }: { 
   return (
     <div className="form content-checks">
       <div className="row spread">
-        <strong className="small">Checked inside the video by the content agent</strong>
+        <strong className="small">In-video checks</strong>
         <span className="row">
           <button type="button" className="btn btn-ghost btn-sm" onClick={suggest} disabled={busy || !requirements.trim()}>
             {busy ? "Reading your brief…" : "Suggest from the brief"}
@@ -63,55 +63,45 @@ export function ContentChecksEditor({ value, onChange, requirements, brand }: { 
       </div>
       <ErrorText error={error} />
       {note && <p className="small muted">{note}</p>}
-      {value.length === 0 ? (
-        <p className="small muted">No in-video checks. Title, description, tags, length and disclosure are always checked.</p>
-      ) : (
-        value.map((c, i) => (
-          <div key={c.id + i} className="check-row">
-            <span className="chip">{c.kind === "spoken_mention" ? "Spoken" : "Logo"}</span>
-            <label>
-              {c.kind === "spoken_mention" ? "Name to hear" : "Brand whose logo to see"}
-              <input value={c.phrase} onChange={(e) => update(i, { phrase: e.target.value })} minLength={2} maxLength={60} required />
-            </label>
-            {c.kind === "spoken_mention" && (
-              <>
-                <label>
-                  At least
-                  <input type="number" min={1} max={50} value={c.min_count} onChange={(e) => update(i, { min_count: Math.max(1, Number(e.target.value)) })} />
-                </label>
-                <label>
-                  Up to (optional)
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={c.max_count ?? ""}
-                    onChange={(e) => update(i, { max_count: e.target.value ? Number(e.target.value) : null })}
-                  />
-                </label>
-                <label>
-                  Other spellings
-                  <input
-                    value={c.aliases.join(", ")}
-                    onChange={(e) => update(i, { aliases: e.target.value.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 5) })}
-                    placeholder="fit fuel"
-                  />
-                </label>
-              </>
-            )}
-            <button type="button" className="link" onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="Remove check">
-              Remove
-            </button>
-          </div>
-        ))
-      )}
-      {value.length > 0 && (
-        <Notice>
-          Spoken mentions are counted from the video's captions (the creator's own, else YouTube's automatic speech captions); too few rejects the post and
-          the creator can resubmit. Logos are looked for by AI in a few frames YouTube publishes: that only advises, so you confirm it in your review before
-          the fixed fee is released. These checks are added to the document creators sign.
-        </Notice>
-      )}
+      {value.map((c, i) => (
+        <div key={c.id + i} className="check-row">
+          <span className="chip">{c.kind === "spoken_mention" ? "Spoken" : "Logo"}</span>
+          <label>
+            {c.kind === "spoken_mention" ? "Name to hear" : "Brand whose logo to see"}
+            <input value={c.phrase} onChange={(e) => update(i, { phrase: e.target.value })} minLength={2} maxLength={60} required />
+          </label>
+          {c.kind === "spoken_mention" && (
+            <>
+              <label>
+                At least
+                <input type="number" min={1} max={50} value={c.min_count} onChange={(e) => update(i, { min_count: Math.max(1, Number(e.target.value)) })} />
+              </label>
+              <label>
+                Up to (optional)
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={c.max_count ?? ""}
+                  onChange={(e) => update(i, { max_count: e.target.value ? Number(e.target.value) : null })}
+                />
+              </label>
+              <label>
+                Other spellings
+                <input
+                  value={c.aliases.join(", ")}
+                  onChange={(e) => update(i, { aliases: e.target.value.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 5) })}
+                  placeholder="fit fuel"
+                />
+              </label>
+            </>
+          )}
+          <button type="button" className="link" onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="Remove check">
+            Remove
+          </button>
+        </div>
+      ))}
+      {value.some((c) => c.kind === "logo_visible") && <p className="small muted">Logo checks only advise: you confirm them in your review.</p>}
     </div>
   );
 }

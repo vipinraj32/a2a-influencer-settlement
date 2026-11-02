@@ -19,7 +19,7 @@ from zyroxq.config import Settings
 from zyroxq.models import Campaign, CampaignSpec, DealState
 from zyroxq.services.deals import campaign_progress
 
-from .test_e2e import CAMPAIGN, MCP_TOKEN, client_for, onboard_advertiser, onboard_influencer, server  # noqa: F401 - pytest fixtures
+from .test_e2e import CAMPAIGN, MCP_TOKEN, client_for, named, onboard_advertiser, onboard_influencer, server  # noqa: F401 - pytest fixtures
 
 TERMINAL = {"AGREED", "REJECTED", "TIMED_OUT", "FAILED", "CANCELLED"}
 
@@ -262,7 +262,7 @@ async def test_concurrent_campaigns_keep_separate_queues(server):
     advertiser_id = await creators(app, "ava", "kai")
     seen = record(app)
     adv = client_for(app, advertiser_id)
-    a, b = await asyncio.gather(adv.post("/api/campaigns", json=CAMPAIGN), adv.post("/api/campaigns", json=CAMPAIGN))
+    a, b = await asyncio.gather(adv.post("/api/campaigns", json=named()), adv.post("/api/campaigns", json=named()))
     await app.state.zx.runner.wait_idle()
     for res in (a, b):
         cid = res.json()["spec"]["id"]

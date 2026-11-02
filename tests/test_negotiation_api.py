@@ -12,6 +12,7 @@ from .test_e2e import (  # noqa: F401 - pytest fixtures
     CAMPAIGN,
     by_influencer,
     client_for,
+    named,
     onboard_advertiser,
     onboard_influencer,
     onboarded,
@@ -142,7 +143,7 @@ async def test_disclosure_gate_at_campaign_creation(onboarded):
                            ({"jurisdictions": []}, "at least one jurisdiction")):  # fmt: skip
         res = await adv.post("/api/campaigns", json={**CAMPAIGN, **change})
         assert res.status_code == 400 and needle in res.json()["detail"], res.text
-    spec = (await adv.post("/api/campaigns", json={**CAMPAIGN, "jurisdictions": ["us"]})).json()["spec"]
+    spec = (await adv.post("/api/campaigns", json=named(jurisdictions=["us"]))).json()["spec"]
     assert spec["disclosure_policies"] == ["US@1"]
     policies = (await adv.get("/api/disclosure-policies")).json()
     assert {p["jurisdiction"] for p in policies["policies"]} == {"IN", "US"} and "Not legal advice" in policies["disclaimer"]
@@ -152,7 +153,7 @@ async def test_disclosure_gate_at_campaign_creation(onboarded):
     op = client_for(app)
     op.headers["Authorization"] = "Bearer test-operator-token"
     assert (await op.put("/api/disclosure-policies/US", json={**us, "placement_chars": 80})).json()["id"] == "US@2"
-    again = (await adv.post("/api/campaigns", json={**CAMPAIGN, "jurisdictions": ["US"]})).json()["spec"]
+    again = (await adv.post("/api/campaigns", json=named(jurisdictions=["US"]))).json()["spec"]
     assert again["disclosure_policies"] == ["US@2"] and (await adv.get(f"/api/campaigns/{spec['id']}")).json()["spec"]["disclosure_policies"] == ["US@1"]
     for c in (adv, op):
         await c.aclose()
@@ -184,7 +185,6 @@ async def test_compliance_review_gates_the_fixed_fee(onboarded):
     assert (await ava.post(f"/api/deals/{deal_id}/compliance/review", json={"approved": True})).status_code == 403  # advertisers only
 
     assert (await adv.post(f"/api/deals/{deal_id}/compliance/review", json={"approved": True, "note": "label + on-screen ok"})).status_code == 200
-    await adv.post("/api/dev/advance", json={"hours": 1})
     assert (await adv.get(f"/api/deals/{deal_id}")).json()["state"] == "FIXED_RELEASED"
     for c in (adv, ava):
         await c.aclose()

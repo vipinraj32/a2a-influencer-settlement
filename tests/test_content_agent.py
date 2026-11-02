@@ -130,7 +130,6 @@ async def test_checks_are_signed_verified_and_reviewed(onboarded):
     row = next(d for d in (await adv.get(f"/api/campaigns/{cid}/compliance")).json()["deals"] if d["deal_id"] == deal["id"])
     assert row["review"] == "pending" and any("content agent" in g for g in row["gates"])
     assert (await adv.post(f"/api/deals/{deal['id']}/compliance/review", json={"approved": True, "note": "logo at 0:05"})).status_code == 200
-    await adv.post("/api/dev/advance", json={"hours": 1})
     assert (await adv.get(f"/api/deals/{deal['id']}")).json()["state"] == "FIXED_RELEASED"
     for c in (adv, ava):
         await c.aclose()

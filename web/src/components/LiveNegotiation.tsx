@@ -33,7 +33,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: 
 
 function offerLabel(m: NegotiationEvent): string {
   if (m.reply) return REPLY_LABEL[m.reply] ?? m.reply;
-  if (/^accept/i.test(m.content)) return "Accepts";
+  if (m.intent === "accept" || (!m.intent && /^accept/i.test(m.content))) return "Accepts";
   return m.round === 1 ? "Opening offer" : "Counteroffer";
 }
 
@@ -259,7 +259,7 @@ function Message({ m, model, avatar, note }: { m: NegotiationEvent; model: Compe
         <small title={m.agent_role === "advertiser" ? "Advertiser agent" : "Creator agent"}>
           {m.agent_name} · {time(m.timestamp)}
         </small>
-        {sayMore(m) && <span>{m.content}</span>}
+        {sayMore(m) && <span className="ln-text">{m.content}</span>}
         {m.offer && (
           <span className="ln-offer">
             <b>{offerLabel(m)}</b> {termsText(m.offer, model)}

@@ -176,9 +176,16 @@
 .ln-influencer .ln-bubble.reply-escalate {
   box-shadow: inset 0 0 0 1.5px var(--orange);
 }
+.ln-text {
+  font-size: var(--fs-p);
+  line-height: 1.45;
+  white-space: pre-line;
+}
 .ln-offer {
   padding-top: 0.25rem;
   border-top: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  font-size: var(--fs-xs);
+  opacity: 0.85;
   font-variant-numeric: tabular-nums;
 }
 .ln-offer b,

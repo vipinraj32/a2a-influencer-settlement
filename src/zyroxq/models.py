@@ -177,8 +177,19 @@ class ContentCheck(BaseModel):
         return f"Show the {self.phrase} logo clearly on screen; checked by AI on frames YouTube publishes, then confirmed by the advertiser."
 
 
+CAMPAIGN_NAME_MAX = 80
+
+
+def clean_campaign_name(name: str) -> str:
+    """One line, single spaces, printable characters only: what the advertiser sees in every list."""
+    return " ".join("".join(ch for ch in name if ch.isprintable() or ch.isspace()).split())
+
+
 class CampaignSpec(BaseModel):
     id: str = Field(default_factory=lambda: new_id("CMP"))
+    # The advertiser's own label for this campaign, to tell campaigns apart. Never sent to creators or their agents,
+    # and not part of the signed terms. Campaigns from before names existed have "" (shown as brand · niche).
+    name: str = ""
     advertiser: str
     brand_handle: str  # must appear in the video description, e.g. "@fitfuel"
     niche: str
@@ -211,6 +222,10 @@ class CampaignSpec(BaseModel):
     review_required: bool = False  # advertiser reviews disclosure compliance before the fixed fee is released
     agent_policy_version: int = 0  # advertiser agent policy in force when the campaign started (0 = defaults)
     content_checks: list[ContentCheck] = Field(default_factory=list)  # checked in the video by the content agent
+
+    @property
+    def display_name(self) -> str:
+        return self.name or f"{self.advertiser} · {self.niche}"
 
     def requirements_document(self) -> str:
         """What creators sign (`requirements_hash`): the brief plus the automated checks, when there are any."""
@@ -287,7 +302,7 @@ class DealTerms(BaseModel):
     disclosure_policies: list[str] = Field(default_factory=list)  # "<jurisdiction>@<version>" the post must satisfy
     min_live_hours: int = 48
     views_measured_after_days: int = 7
-    review_window_hours: int = 48
+    review_window_hours: int = 0  # the fixed fee is released as soon as the proof is verified
     influencer_signature: str = ""
 
     def signing_payload(self) -> dict[str, Any]:
@@ -460,12 +475,36 @@ class Attestation(BaseModel):
 
 
 class Payout(BaseModel):
+    """A transfer out of the escrow, recorded only once the escrow made it (a successful receipt, or its Released
+    event found on chain)."""
+
     kind: Literal["fixed", "performance", "refund"]
     to: str
     amount: Decimal
     tx_hash: str
     at: datetime
     simulated: bool = False  # True: an in-process ledger entry, no token moved
+    block_number: int | None = None  # None for simulated entries and records from before this field existed
+    chain_id: int | None = None
+    token: str = ""  # token contract address
+    views: int | None = None  # performance payouts: the verified view count the amount was computed from
+
+
+class PayoutIntent(BaseModel):
+    """A payout decided and signed by the verifier, persisted before its transaction is sent. A retry (crash, lost
+    response, restart) reuses exactly this attestation: the escrow accepts each one once, so it can never pay twice,
+    and an attestation already used is looked up in the escrow's Released events instead of being resent."""
+
+    kind: Literal["fixed", "performance", "refund"]
+    amount: Decimal  # refunds: whatever the escrow returns (its remainder), recorded from the event
+    nonce: int = 0
+    signature: str = ""  # refunds need no attestation: only the remainder can go back, and only to the advertiser
+    evidence_hash: str = ""
+    views: int | None = None
+    from_block: int = 0  # chain height when decided: where to look for its Released event
+    created_at: datetime
+    attempts: int = 0
+    error: str = ""
 
 
 class Deal(BaseModel):
@@ -493,6 +532,8 @@ class Deal(BaseModel):
     proof_history: list[Proof] = Field(default_factory=list)  # earlier submissions, oldest first
     attestations: list[Attestation] = Field(default_factory=list)
     payouts: list[Payout] = Field(default_factory=list)
+    payout_intent: PayoutIntent | None = None  # a payout decided but not yet confirmed on chain
+    funding_block: int | None = None
     fixed_release_due: datetime | None = None
     performance_due: datetime | None = None
     policy_violations: list[str] = Field(default_factory=list)

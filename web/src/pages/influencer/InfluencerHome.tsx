@@ -1,81 +1,19 @@
-import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../../api";
-import { ContentChecksList } from "../../components/ContentChecks";
-import { DealDetail } from "../../components/DealDetail";
-import { Requirements } from "../../components/Requirements";
-import { ActionButton, Avatar, Card, Empty, ErrorText, Notice, Spinner, StateBadge, Stat } from "../../components/ui";
-import { DELIVERABLE_LABEL, humanize, num, usd, videoLength, when } from "../../format";
+import { Avatar, Card, Empty, ErrorText, Notice, Spinner, Stat } from "../../components/ui";
+import { IN_ESCROW, NEEDS_PROOF } from "../../creatorDeals";
+import { humanize, num, usd } from "../../format";
 import { useLiveEvents, useResource } from "../../live";
-import { useMe, useSession } from "../../session";
-import type { InfluencerDeal } from "../../types";
-
-const NEEDS_PROOF = new Set(["FUNDED", "PROOF_REJECTED"]);
-const IN_ESCROW = new Set(["FUNDED", "PROOF_SUBMITTED", "PROOF_REJECTED", "VERIFIED", "FIXED_RELEASED", "DISPUTED"]);
-
-function ProofForm({ deal, onDone }: { deal: InfluencerDeal; onDone: () => void }) {
-  const { status } = useSession();
-  const rejected = deal.state === "PROOF_REJECTED" ? deal.proof : null;
-  const [url, setUrl] = useState(rejected ? `https://youtube.com/watch?v=${rejected.video_id}` : "");
-  const [inVideo, setInVideo] = useState(false);
-  const deadline = deal.terms?.publish_by;
-  const late = deadline ? new Date(deadline).getTime() < Date.now() : false;
-  if (late) return <Notice tone="bad">The publish deadline ({when(deadline)}) has passed: no more submissions; the escrow refunds the advertiser.</Notice>;
-  const tags = deal.terms?.required_tags.join(" ") ?? "#ad";
-  const rules = deal.terms?.disclosure_policies ?? [];
-  return (
-    <div className="proof-form">
-      {rejected && (
-        <h3>
-          Resubmit (submission #{rejected.attempt + 1}) before {when(deadline)}
-        </h3>
-      )}
-      {rejected && <p className="small">Fixed the same video? Resubmit its link below. Uploaded a new one? Paste the new link.</p>}
-      <p>
-        Post your {DELIVERABLE_LABEL[deal.campaign.deliverable] ?? deal.campaign.deliverable} on your verified channel before{" "}
-        <strong>{when(deal.terms?.publish_by)}</strong>. Put <code>{deal.campaign.brand_handle}</code> and <code>{tags}</code> in the description, then
-        paste the link here.
-      </p>
-      {deal.campaign.max_duration_seconds > 0 && (
-        <p className="small">
-          Video length must be <strong>{videoLength(deal.campaign.min_duration_seconds, deal.campaign.max_duration_seconds)}</strong>. The verifier reads it
-          from YouTube.
-        </p>
-      )}
-      {rules.length > 0 && (
-        <p className="small">
-          Disclosure rules {rules.join(", ")}: put the label in the title or at the very start of the description, and show or say it in the video itself.
-        </p>
-      )}
-      <ContentChecksList checks={deal.campaign.content_checks ?? []} />
-      <label className="check">
-        <input type="checkbox" checked={inVideo} onChange={(e) => setInVideo(e.target.checked)} />I confirm the sponsorship disclosure is shown or said in the
-        video itself (YouTube's API cannot check this, so it is recorded as your statement)
-      </label>
-      {!status?.verifier_online && <Notice tone="warn">The verifier is offline: the server needs YOUTUBE_API_KEY.</Notice>}
-      <div className="row">
-        <input className="grow" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://youtube.com/shorts/…" maxLength={300} />
-        <ActionButton
-          disabled={!url.trim()}
-          onClick={async () => {
-            await api.submitProof(deal.id, url.trim(), inVideo ? { in_video_disclosure: true } : {});
-            setUrl("");
-            onDone();
-          }}
-        >
-          {rejected ? "Resubmit for verification" : "Submit for verification"}
-        </ActionButton>
-      </div>
-    </div>
-  );
-}
+import { useMe } from "../../session";
+import { DealCard } from "./MyDeals";
+import "../advertiser/dashboard.css";
+import "./deals.css";
 
 export function InfluencerHome() {
   const me = useMe();
   const user = me.user;
   const deals = useResource(api.influencerDeals, "my-deals");
   const inbox = useResource(api.influencerInbox, "inbox");
-  const [selected, setSelected] = useState<string | null>(null);
   useLiveEvents(
     () => true, // the stream only carries events for this user's own deals
     () => {
@@ -90,7 +28,6 @@ export function InfluencerHome() {
     .filter((d) => IN_ESCROW.has(d.state) && d.terms)
     .reduce((s, d) => s + Number(d.terms!.cap) - d.payouts.filter((p) => p.kind !== "refund").reduce((a, p) => a + Number(p.amount), 0), 0);
   const todo = list.filter((d) => NEEDS_PROOF.has(d.state));
-  const deal = list.find((d) => d.id === selected) ?? null;
 
   return (
     <div className="stack">
@@ -110,6 +47,13 @@ export function InfluencerHome() {
         </Link>
       </div>
 
+      {todo.length > 0 && (
+        <Notice tone="warn">
+          {todo.length === 1 ? "1 deal is" : `${todo.length} deals are`} funded and waiting for your video.{" "}
+          <Link to="/influencer/deals?status=accepted">Open them</Link>
+        </Notice>
+      )}
+
       {!me.agent_listed && (
         <Notice tone="warn">
           Your agent is not discoverable. <Link to="/influencer/agent">Switch it on</Link> so advertiser agents can negotiate with you.
@@ -123,87 +67,52 @@ export function InfluencerHome() {
         <Stat label="Need your video" value={todo.length} />
       </div>
 
-      <div className="split">
-        <Card title="My deals">
+      <div className="dash-grid">
+        <Card
+          title="Recent deals"
+          actions={
+            list.length > 0 && (
+              <Link to="/influencer/deals" className="btn btn-ghost btn-sm">
+                View all
+              </Link>
+            )
+          }
+        >
           <ErrorText error={deals.error} />
           {deals.loading && !deals.data ? (
             <Spinner />
           ) : list.length === 0 ? (
             <Empty>No deals yet. When an advertiser's agent contacts yours, the negotiation appears here live.</Empty>
           ) : (
-            <table className="table selectable">
-              <thead>
-                <tr>
-                  <th>Brand</th>
-                  <th>State</th>
-                  <th>Fixed</th>
-                  <th>CPM</th>
-                  <th>Cap</th>
-                  <th>Publish by</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((d) => (
-                  <tr key={d.id} className={d.id === selected ? "selected" : ""} onClick={() => setSelected(d.id)}>
-                    <td>
-                      <strong>{d.campaign.advertiser}</strong> <span className="muted">{d.campaign.brand_handle}</span>
-                    </td>
-                    <td>
-                      <StateBadge state={d.state} />
-                    </td>
-                    <td>{usd(d.terms?.fixed_fee)}</td>
-                    <td>{usd(d.terms?.cpm)}</td>
-                    <td>{usd(d.terms?.cap)}</td>
-                    <td className="muted">{when(d.terms?.publish_by)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="md-list">
+              {list.slice(0, 4).map((d) => (
+                <DealCard key={d.id} deal={d} />
+              ))}
+            </ul>
           )}
         </Card>
 
-        {deal ? (
-          <DealDetail
-            deal={deal}
-            title={`${deal.campaign.advertiser} ${deal.campaign.brand_handle}`}
-            actions={
-              <>
-                {deal.campaign.brief && <p className="brief">“{deal.campaign.brief}”</p>}
-                <h3>Content requirements</h3>
-                <Requirements
-                  deliverable={deal.campaign.deliverable}
-                  min={deal.campaign.min_duration_seconds}
-                  max={deal.campaign.max_duration_seconds}
-                  text={deal.campaign.requirements}
-                  hash={deal.terms?.requirements_hash}
-                />
-                {NEEDS_PROOF.has(deal.state) && <ProofForm key={deal.proof?.submitted_at ?? deal.id} deal={deal} onDone={() => void deals.reload()} />}
-              </>
-            }
-          />
-        ) : (
-          <Card title="Agent inbox (A2A)">
-            <p className="muted small">Settlement notices your agent received from advertiser agents.</p>
-            {!inbox.data?.length ? (
-              <Empty>Nothing yet.</Empty>
-            ) : (
-              <ul className="inbox">
-                {inbox.data.map((m, i) => (
-                  <li key={i}>
-                    <strong>{humanize(String(m.type))}</strong> · <span className="mono">{String(m.deal_id)}</span>
-                    {m.amount_locked !== undefined && <> · {usd(String(m.amount_locked))} locked</>}
-                    {m.amount !== undefined && (
-                      <>
-                        {" "}
-                        · {humanize(String(m.kind))} {usd(String(m.amount))}
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        )}
+        <Card title="Agent inbox (A2A)">
+          <p className="muted small">Settlement notices your agent received from advertiser agents.</p>
+          {!inbox.data?.length ? (
+            <Empty>Nothing yet.</Empty>
+          ) : (
+            <ul className="inbox">
+              {inbox.data.map((m, i) => (
+                <li key={i}>
+                  <strong>{humanize(String(m.type))}</strong> · <span className="mono">{String(m.deal_id)}</span>
+                  {m.amount_locked !== undefined && <> · {usd(String(m.amount_locked))} locked</>}
+                  {m.amount !== undefined && (
+                    <>
+                      {" "}
+                      · {humanize(String(m.kind))} {usd(String(m.amount))}
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
       </div>
     </div>
   );

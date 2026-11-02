@@ -29,6 +29,7 @@ from ...compliance import BUILT_IN, DisclosurePolicy, approved_in_all
 from ...feedback import lessons_prompt
 from ...models import DealTerms, NegotiationReply, Offer
 from ...wallet.signer import sign_terms
+from .. import chat
 from .identity import InfluencerIdentity
 
 log = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ def build_influencer_graph(
         counter = record.pop("_counter", None)
         action = Action(record["action"])
         public = record["public_explanation"]
+        brand = state["offer"].get("advertiser", "") or "there"
         if action == Action.ACCEPT:
             terms = DealTerms(
                 deal_id=offer.deal_id,
@@ -154,11 +156,15 @@ def build_influencer_graph(
                 scope=offer.scope,
                 disclosure_policies=offer.disclosure_policies,
             )
-            reply = NegotiationReply(kind="accept", offer=offer, terms=sign_terms(me.private_key, terms), reason=public)
+            reply = NegotiationReply(kind="accept", offer=offer, terms=sign_terms(me.private_key, terms), reason=chat.creator_accepts(brand, offer))
         elif action == Action.COUNTEROFFER and counter is not None:
-            reply = NegotiationReply(kind="counter", offer=Offer.model_validate(counter), reason=public)
+            countered = Offer.model_validate(counter)
+            # the creator's last counter is one round before the limit: the advertiser gets the final word
+            said = chat.creator_counter(brand, offer, countered, last_round=offer.round >= offer.max_rounds - 1)
+            reply = NegotiationReply(kind="counter", offer=countered, reason=said)
         else:
-            reply = NegotiationReply(kind=_KIND[action], reason=public)  # type: ignore[arg-type]
+            said = {Action.REJECT: chat.creator_declines, Action.REQUEST_CLARIFICATION: chat.creator_asks}.get(action, str)(public)
+            reply = NegotiationReply(kind=_KIND[action], reason=said)  # type: ignore[arg-type]
         dumped = reply.model_dump(mode="json")
         dumped["decided_by"] = record["decided_by"]
         dumped["decision_id"] = record["id"]

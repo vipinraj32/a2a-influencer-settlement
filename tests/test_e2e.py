@@ -4,6 +4,7 @@ EIP-712 signing → simulated HSP webhook → escrow → proofs → time travel 
 
 import asyncio
 import json
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
@@ -104,6 +105,7 @@ async def onboard_advertiser(app) -> str:
 
 
 CAMPAIGN = {
+    "name": "Protein bites launch",
     "advertiser": "FitFuel",
     "brand_handle": "@fitfuel",
     "niche": "fitness",
@@ -118,6 +120,11 @@ CAMPAIGN = {
     "max_duration_seconds": 60,
     "requirements": "## Goal\nLaunch FitFuel protein bites.\n\n## Must show\n- Unboxing\n- Taste reaction\n\n## Must not\n- Mention competitors\n" * 20,
 }
+
+
+def named(**overrides) -> dict:
+    """The test campaign under a fresh name: an advertiser's campaigns never share one."""
+    return {**CAMPAIGN, "name": f"{CAMPAIGN['name']} {uuid.uuid4().hex[:6]}", **overrides}
 
 
 async def by_influencer(client, campaign_id):
@@ -212,7 +219,8 @@ async def test_full_campaign_lifecycle(onboarded):
     assert res.json()["state"] == "PROOF_REJECTED"
     assert not next(c for c in res.json()["proof"]["checks"] if c["name"] == "disclosure_in_video:US")["passed"]
     res = await ava.post(f"/api/deals/{deals['ava']['id']}/proof", json={"video_url": url, "attestations": ATTESTED})
-    assert res.json()["state"] == "VERIFIED", res.json()["proof"]
+    # verified → the fixed fee is released at once, with a verifier attestation; no 48 h hold
+    assert res.json()["state"] == "FIXED_RELEASED", res.json()["proof"]
     assert {"disclosure_label:IN", "disclosure_label:US"} <= {c["name"] for c in res.json()["proof"]["checks"] if c["passed"]}
     assert (await ava.post(f"/api/deals/{deals['raj']['id']}/proof", json={"video_url": url})).status_code == 404  # not Ava's deal
 
@@ -227,14 +235,12 @@ async def test_full_campaign_lifecycle(onboarded):
     assert res.json()["state"] == "PROOF_REJECTED"
     assert not next(c for c in res.json()["proof"]["checks"] if c["name"] == "no_ai_directed_instructions")["passed"]
 
-    # +49h: review window over → fixed fee released with a verifier attestation
-    await adv.post("/api/dev/advance", json={"hours": 49})
     ava_deal = (await adv.get(f"/api/deals/{deals['ava']['id']}")).json()
     assert ava_deal["state"] == "FIXED_RELEASED"
     assert ava_deal["payouts"][0]["kind"] == "fixed" and Decimal(ava_deal["payouts"][0]["amount"]) == Decimal(ava_deal["terms"]["fixed_fee"])
 
     # +7 days: performance fee from views, remainder refunded to the payer; the two failed proofs expire and refund in full
-    await adv.post("/api/dev/advance", json={"hours": 24 * 7})
+    await adv.post("/api/dev/advance", json={"hours": 24 * 7 + 2})  # past day 7 and the publish deadline
     deals = await by_influencer(adv, cid)
     done = deals["ava"]
     assert done["state"] == "COMPLETED"
